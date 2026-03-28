@@ -130,14 +130,14 @@ app.get('/api/stream', async (req, res) => {
     try {
         const { imdbId } = req.query;
         const streamData = await resolveStream(tmdbId, type, season, episode, imdbId);
-        if (streamData && streamData.success) {
-            res.json(streamData);
-        } else {
-            res.status(404).json({ success: false, error: 'No stream found across all providers' });
-        }
+        
+        // Final fallback logic was integrated inside resolveStream, 
+        // if even that failed, streamData.success will be false. 
+        // We always return the response now so the frontend can read the fallback result.
+        res.json(streamData);
     } catch (e) {
         console.error('[GigaEngine] Resolution error:', e);
-        res.status(500).json({ success: false, error: e.message });
+        res.status(500).json({ success: false, error: e.message || 'Internal Stream Resolution Error' });
     }
 });
 
