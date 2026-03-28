@@ -81,7 +81,46 @@ async function scrapeVidSrcVip(tmdbId, type, season, episode) {
         }
         return sources.length > 0 ? { success: true, sources, provider: 'VidSrc.vip' } : null;
     } catch (e) {
-        console.warn(`[GigaResolver] VidSrc.vip failed: ${e.message}`);
+        console.warn(`[GigaResolver] VidSrc.vip failed`);
+        return null;
+    }
+}
+
+/**
+ * VidSrc.cc Scraper (Mirror)
+ */
+async function scrapeVidSrcCc(tmdbId, type, season, episode) {
+    try {
+        const baseUrl = DOMAINS.vidsrc_cc;
+        const url = type === 'tv' 
+            ? `${baseUrl}/v2/embed/tv/${tmdbId}/${season}/${episode}`
+            : `${baseUrl}/v2/embed/movie/${tmdbId}`;
+
+        console.log(`[GigaResolver] Trying VidSrcCc: ${url}`);
+        
+        const { data } = await axios.get(url, {
+            ...PROXY_CONFIG,
+            headers: { 'Referer': 'https://google.com' },
+            timeout: 5000
+        });
+
+        if (!data || !data.source1) return null;
+
+        const sources = [];
+        for (let i = 1; data[`source${i}`]; i++) {
+            const s = data[`source${i}`];
+            if (s?.url) {
+                sources.push({
+                    url: s.url,
+                    quality: 'auto',
+                    isM3U8: s.url.includes('.m3u8'),
+                    provider: 'VidSrc.cc'
+                });
+            }
+        }
+        return sources.length > 0 ? { success: true, sources, provider: 'VidSrc.cc' } : null;
+    } catch (e) {
+        console.warn(`[GigaResolver] VidSrc.cc failed`);
         return null;
     }
 }
@@ -199,32 +238,6 @@ async function scrapeNunflix(tmdbId, type, season, episode) {
     }
 }
 
-/**
- * Multiembed Scraper (IMDB-based)
- */
-async function scrapeMultiembed(imdbId, type, season, episode) {
-    if (!imdbId) return null;
-    try {
-        const url = type === 'tv'
-            ? `${DOMAINS.multiembed}/?video_id=${imdbId}&s=${season}&e=${episode}`
-            : `${DOMAINS.multiembed}/?video_id=${imdbId}`;
-
-        console.log(`[GigaResolver] Trying Multiembed: ${url}`);
-        // This usually returns an iframe directly, so it's a "fallback" provider
-        return {
-            provider: 'Multiembed',
-            sources: [{
-                url: url,
-                isM3U8: false,
-                isEmbed: true
-            }],
-            subtitles: []
-        };
-    } catch (e) {
-        return null;
-    }
-}
-
 // --- MASTER RESOLVER ---
 
 export async function resolveStream(tmdbId, type, season, episode, imdbId) {
@@ -243,17 +256,24 @@ export async function resolveStream(tmdbId, type, season, episode, imdbId) {
         }
     }
 
-    // 2. Race fast request-based scrapers (The "Jog")
-    const fastScrapers = [
-        scrapeVidSrcVip(tmdbId, type, season, episode),
-        scrapeEmbedSu(tmdbId, type, season, episode),
-        scrapeAutoembed(tmdbId, type, season, episode),
-        scrapeNunflix(tmdbId, type, season, episode),
-        scrapeMultiembed(imdbId, type, season, episode)
-    ];
+    // Combine any available IDs (TMDB or IMDB)
+    const targetIds = [tmdbId, imdbId].filter(id => id && String(id).trim().length > 0);
+
+    // 2. Race fast request-based scrapers across ALL IDs (Dual-Wielding)
+    const fastScrapers = [];
+
+    for (const id of targetIds) {
+        fastScrapers.push(
+            scrapeVidSrcVip(id, type, season, episode),
+            scrapeVidSrcCc(id, type, season, episode),
+            scrapeEmbedSu(id, type, season, episode),
+            scrapeAutoembed(id, type, season, episode),
+            scrapeNunflix(id, type, season, episode)
+        );
+    }
 
     try {
-        // Promise.any would wait for the first SUCCESSFUL result
+        // Promise.any waits for the first SUCCESSFUL result
         const winner = await Promise.any(fastScrapers.map(p => p.then(res => {
             if (res && res.success) return res;
             throw new Error('Failed');
@@ -271,10 +291,9 @@ export async function resolveStream(tmdbId, type, season, episode, imdbId) {
             return winner;
         }
     } catch (e) {
-        // All fast scrapers failed
+        // All fast scrapers failed across all IDs
     }
 
-    // 2. Fallback
     console.log('[GigaResolver] All primary sources failed.');
-    return { success: false, error: 'All primary sources failed' };
+    return { success: false, error: 'No stream found across all providers' };
 }
