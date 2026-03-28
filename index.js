@@ -1,5 +1,5 @@
 import express from 'express';
-import cors from 'cors';
+import cors from 'cors'; // Giga v1.0.1
 import { createProxyMiddleware } from 'http-proxy-middleware';
 import axios from 'axios';
 import jwt from 'jsonwebtoken';
