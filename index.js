@@ -101,12 +101,14 @@ app.get('/m3u8-proxy', async (req, res) => {
             responseType: 'text'
         });
 
-        // Rewrite relative paths in M3U8 to absolute if necessary (simple version)
-        let body = response.data;
-        const origin = new URL(url).origin;
-        const basePath = url.substring(0, url.lastIndexOf('/') + 1);
+        // Rewrite relative paths in M3U8 for better provider compatibility
+        let body = response.data.split('\n').map(line => {
+            if (line.trim() === '' || line.startsWith('#')) return line;
+            if (line.startsWith('http')) return line;
+            // Handle relative paths by converting to absolute based on the original source
+            try { return new URL(line, url).href; } catch (e) { return line; }
+        }).join('\n');
 
-        // This is a basic rewrite. For Giga robustness, we might need a more complex stream parser
         res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
         res.setHeader('Access-Control-Allow-Origin', '*');
         res.send(body);

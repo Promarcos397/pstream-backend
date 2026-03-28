@@ -1,5 +1,6 @@
-node_modules/
 .env
+.hf_token
+node_modules/
 .DS_Store
 dist/
 npm-debug.log*
