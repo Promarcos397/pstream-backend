@@ -141,6 +141,41 @@ app.get('/api/stream', async (req, res) => {
     }
 });
 
+// Fast prediction endpoint for the frontend
+app.get('/api/predict_stream', async (req, res) => {
+    const { tmdbId, type, season, episode, imdbId } = req.query;
+    
+    if (!tmdbId || !type) {
+        return res.status(400).json({ success: false, error: 'tmdbId and type are required' });
+    }
+
+    try {
+        const fallbackId = imdbId && String(imdbId).trim() !== '' ? imdbId : tmdbId;
+        const isImdb = String(fallbackId).startsWith('tt');
+        const paramName = isImdb ? 'imdb' : 'tmdb';
+
+        const fallbackUrl = type === 'tv'
+            ? `https://vidsrc-embed.su/embed/tv?${paramName}=${fallbackId}&season=${season || 1}&episode=${episode || 1}&ds_lang=en&autoplay=1&autonext=1`
+            : `https://vidsrc-embed.su/embed/movie?${paramName}=${fallbackId}&ds_lang=en&autoplay=1`;
+
+        // Check if the URL returns a 200
+        const response = await axios.head(fallbackUrl, {
+            timeout: 2000, // Very fast timeout
+            validateStatus: () => true // Allow any status code
+        });
+        
+        // If it's a 200 or 302, it likely works. If it's 404, it definitively failed.
+        if (response.status === 200 || response.status === 302) {
+             return res.json({ available: true, url: fallbackUrl });
+        } else {
+             return res.json({ available: false, status: response.status });
+        }
+        
+    } catch (error) {
+         return res.json({ available: false, error: error.message });
+    }
+});
+
 // --- AUTH & SYNC (Supabase) ---
 
 app.get('/api/auth/challenge', async (req, res) => {
