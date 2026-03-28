@@ -294,6 +294,33 @@ export async function resolveStream(tmdbId, type, season, episode, imdbId) {
         // All fast scrapers failed across all IDs
     }
 
-    console.log('[GigaResolver] All primary sources failed.');
-    return { success: false, error: 'No stream found across all providers' };
+    console.log('[GigaResolver] All primary sources failed. Falling back to Embedded Player.');
+    
+    const fallbackId = imdbId && String(imdbId).trim() !== '' ? imdbId : tmdbId;
+    if (!fallbackId) return { success: false, error: 'No valid ID provided for fallback' };
+
+    const isImdb = String(fallbackId).startsWith('tt');
+    const paramName = isImdb ? 'imdb' : 'tmdb';
+
+    const fallbackUrl = type === 'tv'
+        ? `https://vidsrc-embed.su/embed/tv?${paramName}=${fallbackId}&season=${season}&episode=${episode}&ds_lang=en&autoplay=1&autonext=1`
+        : `https://vidsrc-embed.su/embed/movie?${paramName}=${fallbackId}&ds_lang=en&autoplay=1`;
+
+    const embedResult = {
+        success: true,
+        provider: 'VidSrcEmbed.su',
+        sources: [{
+            url: fallbackUrl,
+            quality: 'auto',
+            isM3U8: false,
+            isEmbed: true
+        }],
+        subtitles: []
+    };
+
+    if (redis) {
+        await redis.setex(cacheKey, 600, JSON.stringify(embedResult));
+    }
+
+    return embedResult;
 }
