@@ -1,5 +1,5 @@
 import express from 'express';
-import cors from 'cors'; // Giga v1.0.1
+import cors from 'cors';
 import { createProxyMiddleware } from 'http-proxy-middleware';
 import axios from 'axios';
 import jwt from 'jsonwebtoken';
@@ -25,18 +25,69 @@ if (process.env.REDIS_URL) {
     }
 }
 export { redis };
+
 const JWT_SECRET = process.env.JWT_SECRET || 'p-stream-secret-change-me';
 
 app.use(cors());
 app.use(express.json());
 
+// --- GIGA HOME PAGE (Visual Identity) ---
+
+app.get('/', (req, res) => {
+    res.send(`
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>P-Stream Giga Engine</title>
+        <style>
+            body { 
+                background: linear-gradient(135deg, #0f0f0f 0%, #1a1a1a 100%); 
+                color: #fff; font-family: 'Inter', system-ui, -apple-system, sans-serif; 
+                display: flex; flex-direction: column; align-items: center; justify-content: center; 
+                height: 100vh; margin: 0; text-align: center; overflow: hidden;
+            }
+            .container { animation: fadeIn 1.2s ease-out; }
+            h1 { font-size: 3rem; margin-bottom: 0.5rem; background: linear-gradient(to right, #E50914, #ff5f6d); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+            p { font-size: 1.2rem; color: #aaa; margin-bottom: 2rem; }
+            .badge { background: rgba(229, 9, 20, 0.2); border: 1px solid #E50914; color: #E50914; padding: 0.4rem 1rem; border-radius: 50px; font-size: 0.9rem; font-weight: bold; }
+            .stats { margin-top: 3rem; display: flex; gap: 2rem; }
+            .stat-item { background: rgba(255, 255, 255, 0.05); padding: 1.5rem; border-radius: 12px; min-width: 150px; border: 1px solid rgba(255, 255, 255, 0.1); }
+            .stat-value { font-size: 1.5rem; font-weight: bold; display: block; }
+            .stat-label { color: #666; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 1px; }
+            @keyframes fadeIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <span class="badge">ENGINE ONLINE</span>
+            <h1>P-STREAM GIGA</h1>
+            <p>High-performance movie streaming & meta-engine.</p>
+            <div class="stats">
+                <div class="stat-item">
+                    <span class="stat-value">v2.5.0</span>
+                    <span class="stat-label">Version</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-value">${redis ? '✓ UP' : '× DOWN'}</span>
+                    <span class="stat-label">Redis Cache</span>
+                </div>
+                <div class="stat-item">
+                    <a href="/healthcheck" style="text-decoration: none; color: inherit;">
+                        <span class="stat-value">✓ LIVE</span>
+                        <span class="stat-label">Check Status</span>
+                    </a>
+                </div>
+            </div>
+        </div>
+    </body>
+    </html>
+    `);
+});
+
 // --- GIGA PROXY (CORS & REFERER BYPASS) ---
 
-/**
- * 1. Standard Proxy (destination style)
- * Used by: Chromecast, General scrapers
- * Route: /?destination=URL
- */
 app.use('/proxy', createProxyMiddleware({
     router: (req) => {
         const url = req.query.destination || req.query.url;
@@ -52,7 +103,7 @@ app.use('/proxy', createProxyMiddleware({
     changeOrigin: true,
     onProxyReq: (proxyReq, req) => {
         const targetUrl = req.query.destination || req.query.url;
-        // Map custom X- headers back to standard headers
+        if (!targetUrl) return;
         const referer = req.headers['x-referer'] || req.query.referer || targetUrl;
         const cookie = req.headers['x-cookie'] || req.query.cookie;
         const userAgent = req.headers['x-user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
@@ -66,117 +117,29 @@ app.use('/proxy', createProxyMiddleware({
         proxyRes.headers['access-control-allow-origin'] = '*';
         proxyRes.headers['access-control-allow-methods'] = 'GET, OPTIONS, POST';
         proxyRes.headers['access-control-allow-headers'] = '*';
-        
-        // Map Set-Cookie back to X-Set-Cookie for frontend access
-        if (proxyRes.headers['set-cookie']) {
-            proxyRes.headers['x-set-cookie'] = proxyRes.headers['set-cookie'];
-        }
-
+        if (proxyRes.headers['set-cookie']) proxyRes.headers['x-set-cookie'] = proxyRes.headers['set-cookie'];
         delete proxyRes.headers['content-security-policy'];
         delete proxyRes.headers['x-frame-options'];
         delete proxyRes.headers['x-content-type-options'];
     }
 }));
 
-/**
- * 2. M3U8 Proxy (HLS style)
- * Used by: Airplay, HLS.js
- * Route: /m3u8-proxy?url=URL&headers=JSON
- */
-app.get('/m3u8-proxy', async (req, res) => {
-    const { url, headers: headersJson } = req.query;
-    if (!url) return res.status(400).send('URL required');
-
-    try {
-        let headers = {};
-        if (headersJson) {
-            headers = JSON.parse(decodeURIComponent(headersJson));
-        }
-
-        const response = await axios.get(url, {
-            headers: {
-                ...headers,
-                'User-Agent': headers['User-Agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
-            },
-            responseType: 'text'
-        });
-
-        // Rewrite relative paths in M3U8 for better provider compatibility
-        let body = response.data.split('\n').map(line => {
-            if (line.trim() === '' || line.startsWith('#')) return line;
-            if (line.startsWith('http')) return line;
-            // Handle relative paths by converting to absolute based on the original source
-            try { return new URL(line, url).href; } catch (e) { return line; }
-        }).join('\n');
-
-        res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        res.send(body);
-    } catch (e) {
-        res.status(500).send(e.message);
-    }
-});
-
-// --- GIGA RESOLVER (MULTI-PROVIDER) ---
+// --- GIGA API ENDPOINTS ---
 
 app.get('/api/stream', async (req, res) => {
-    const { tmdbId, type, season, episode } = req.query;
-    console.log(`[GigaEngine] Stream requested: ${tmdbId} (${type}) S${season}E${episode}`);
-
-    if (!tmdbId || !type) {
-        return res.status(400).json({ success: false, error: 'tmdbId and type are required' });
-    }
+    const { tmdbId, type, season, episode, imdbId } = req.query;
+    if (!tmdbId || !type) return res.status(400).json({ success: false, error: 'tmdbId and type are required' });
 
     try {
-        const { imdbId } = req.query;
         const streamData = await resolveStream(tmdbId, type, season, episode, imdbId);
-        
-        // Final fallback logic was integrated inside resolveStream, 
-        // if even that failed, streamData.success will be false. 
-        // We always return the response now so the frontend can read the fallback result.
         res.json(streamData);
     } catch (e) {
-        console.error('[GigaEngine] Resolution error:', e);
-        res.status(500).json({ success: false, error: e.message || 'Internal Stream Resolution Error' });
+        console.error('[GigaEngine] Stream Error:', e);
+        res.status(500).json({ success: false, error: e.message });
     }
 });
 
-// Fast prediction endpoint for the frontend
-app.get('/api/predict_stream', async (req, res) => {
-    const { tmdbId, type, season, episode, imdbId } = req.query;
-    
-    if (!tmdbId || !type) {
-        return res.status(400).json({ success: false, error: 'tmdbId and type are required' });
-    }
-
-    try {
-        const fallbackId = imdbId && String(imdbId).trim() !== '' ? imdbId : tmdbId;
-        const isImdb = String(fallbackId).startsWith('tt');
-        const paramName = isImdb ? 'imdb' : 'tmdb';
-
-        const fallbackUrl = type === 'tv'
-            ? `https://vidsrc-embed.su/embed/tv?${paramName}=${fallbackId}&season=${season || 1}&episode=${episode || 1}&ds_lang=en&autoplay=1&autonext=1`
-            : `https://vidsrc-embed.su/embed/movie?${paramName}=${fallbackId}&ds_lang=en&autoplay=1`;
-
-        // Check if the URL returns a 200
-        const response = await axios.head(fallbackUrl, {
-            timeout: 2000, // Very fast timeout
-            validateStatus: () => true // Allow any status code
-        });
-        
-        // If it's a 200 or 302, it likely works. If it's 404, it definitively failed.
-        if (response.status === 200 || response.status === 302) {
-             return res.json({ available: true, url: fallbackUrl });
-        } else {
-             return res.json({ available: false, status: response.status });
-        }
-        
-    } catch (error) {
-         return res.json({ available: false, error: error.message });
-    }
-});
-
-// --- AUTH & SYNC (Supabase) ---
+// --- AUTH SYSTEM ---
 
 app.get('/api/auth/challenge', async (req, res) => {
     const { publicKey } = req.query;
@@ -191,23 +154,19 @@ app.get('/api/auth/challenge', async (req, res) => {
 
 app.post('/api/auth/verify', async (req, res) => {
     const { publicKey, signature, challenge, displayName } = req.body;
-    if (!publicKey || !signature || !challenge) return res.status(400).json({ error: 'Missing data' });
+    if (!publicKey || !signature || !challenge) return res.status(400).json({ error: 'Missing handshake data' });
 
     try {
         const isValid = await verifyChallenge(publicKey, signature, challenge);
         if (isValid) {
             let profile = await getProfile(publicKey);
-            if (!profile) {
-                profile = await updateProfile(publicKey, { display_name: displayName || 'Guest' });
-            }
+            if (!profile) profile = await updateProfile(publicKey, { display_name: displayName || 'Guest' });
 
             const token = jwt.sign({ publicKey }, JWT_SECRET, { expiresIn: '30d' });
             res.json({ success: true, token, profile });
-        } else {
-            res.status(401).json({ error: 'Invalid signature' });
         }
     } catch (e) {
-        res.status(500).json({ error: e.message });
+        res.status(401).json({ error: e.message });
     }
 });
 
@@ -239,13 +198,24 @@ app.post('/api/sync', authenticateToken, async (req, res) => {
     }
 });
 
+app.delete('/api/sync', authenticateToken, async (req, res) => {
+    try {
+        await deleteProfile(req.user.publicKey);
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // --- SYSTEM ---
-app.get('/healthcheck', (req, res) => res.status(200).send('Giga Backend Online'));
-app.get('/api/meta', (req, res) => res.json({
-    engine: 'P-Stream Giga (v1.0.0)',
-    hosting: 'Hugging Face Spaces',
-    features: ['Multi-Provider Resolver', 'GigaProxy', 'Supabase Sync']
-}));
+app.get('/healthcheck', (req, res) => {
+    res.status(200).json({
+        status: 'online',
+        redis: !!redis,
+        uptime: process.uptime(),
+        memory: process.memoryUsage()
+    });
+});
 
 app.listen(PORT, () => {
     console.log(`[GigaServer] P-Stream Giga Backend running on port ${PORT}`);

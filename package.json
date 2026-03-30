@@ -20,7 +20,9 @@
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
     "@supabase/supabase-js": "^2.42.0",
-    "@noble/hashes": "^1.4.0"
+    "@noble/hashes": "^1.4.0",
+    "tweetnacl": "^1.0.3",
+    "crypto-js": "^4.2.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.0"
