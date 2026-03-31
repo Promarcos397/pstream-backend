@@ -37,6 +37,8 @@ import { scrapeHDRezka } from './extractors/hdrezka.js';
 import { scrapeZoeChip } from './extractors/zoechip.js';
 import { scrapeRidoMovies } from './extractors/ridomovies.js';
 import { scrapeVsEmbed } from './extractors/vsembed.js';
+import { scrapeVidZee } from './extractors/vidzee.js';
+import { scrapeVidSrc } from './extractors/vidsrcru.js';
 
 export const USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -253,6 +255,10 @@ export async function resolveStream(tmdbId, type, season, episode, imdbId, title
 
     // All engines run concurrently — pure direct M3U8/file sources only
     const enginePromises = [
+        // Top tier — no IP-signed tokens, run first
+        scrapeVidZee(tmdbId, type, sStr, eStr),
+        scrapeVidSrc(tmdbId, type, sStr, eStr),
+        // VidLink — fast but uses IP-signed CDN tokens (fetch mitigated server-side)
         scrapeVidLink(tmdbId, type, sStr, eStr),
         scrapeEE3(tmdbId, type),
         scrapeAutoEmbed(tmdbId, type, sStr, eStr),
