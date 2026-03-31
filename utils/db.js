@@ -13,17 +13,23 @@ if (!supabaseUrl || !supabaseKey) {
 export const supabase = createClient(supabaseUrl, supabaseKey);
 
 export async function getProfile(publicKey) {
-  const { data, error } = await supabase
-    .from('profiles')
-    .select('*')
-    .eq('public_key', publicKey)
-    .single();
+  try {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('public_key', publicKey);
 
-  if (error && error.code !== 'PGRST116') {
-    console.error('[DB] Error getting profile:', error);
+    if (error) {
+      console.error('[DB] Profile Fetch Error:', JSON.stringify(error, null, 2));
+      return null;
+    }
+
+    if (!data || data.length === 0) return null;
+    return data[0];
+  } catch (err) {
+    console.error('[DB] Critical Fetch Errror:', err.message);
     return null;
   }
-  return data;
 }
 
 export async function updateProfile(publicKey, updates) {

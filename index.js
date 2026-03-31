@@ -346,44 +346,44 @@ app.get('/proxy/m3u8', async (req, res) => {
 });
 
 // 2. Binary Segment Proxy (Handles /proxy/video)
-app.use('/proxy', createProxyMiddleware({
-    router: (req) => {
-        const url = req.query.destination || req.query.url;
-        if (!url) return null;
-        try { return new URL(url).origin; } catch (e) { return null; }
-    },
-    pathRewrite: (path, req) => {
-        const urlStr = req.query.destination || req.query.url;
-        if (!urlStr) return path;
-        const url = new URL(urlStr);
-        return url.pathname + url.search;
-    },
-    changeOrigin: true,
-    onProxyReq: (proxyReq, req) => {
-        const targetUrl = req.query.destination || req.query.url;
-        if (!targetUrl) return;
-        const referer = req.headers['x-referer'] || req.query.referer || targetUrl;
-        const userAgent = req.headers['x-user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
-        
-        proxyReq.setHeader('User-Agent', userAgent);
-        proxyReq.setHeader('Referer', referer);
-        try { proxyReq.setHeader('Origin', new URL(referer).origin); } catch (_) {}
-        proxyReq.setHeader('Accept', '*/*');
-        proxyReq.setHeader('Accept-Language', 'en-US,en;q=0.9');
-        proxyReq.setHeader('Sec-Fetch-Dest', 'empty');
-        proxyReq.setHeader('Sec-Fetch-Mode', 'cors');
-        proxyReq.setHeader('Sec-Fetch-Site', 'cross-site');
-        proxyReq.setHeader('sec-ch-ua', '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"');
-        proxyReq.setHeader('sec-ch-ua-mobile', '?0');
-        proxyReq.setHeader('sec-ch-ua-platform', '"Windows"');
-        proxyReq.setHeader('Cache-Control', 'no-cache');
-    },
-    onProxyRes: (proxyRes) => {
-        proxyRes.headers['access-control-allow-origin'] = '*';
-        proxyRes.headers['access-control-allow-methods'] = 'GET, OPTIONS, POST';
-        proxyRes.headers['access-control-allow-headers'] = '*';
+// Uses axios with piping to share cookies/proxy with the manifest resolver
+app.get('/proxy/video', async (req, res) => {
+    let targetUrl = req.query.url;
+    if (!targetUrl) return res.status(400).send('No URL provided');
+    targetUrl = decodeURIComponent(targetUrl);
+    
+    const referer = req.query.referer || targetUrl;
+    let origin = '';
+    try { origin = new URL(referer).origin; } catch (e) { origin = referer; }
+
+    const ua = req.headers['x-user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+
+    const headers = {
+        'User-Agent': ua,
+        'Referer': referer,
+        'Origin': origin,
+        'Accept': '*/*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache',
+    };
+
+    try {
+        const response = await cookieAwareAxios.get(targetUrl, { 
+            headers,
+            responseType: 'stream', 
+            timeout: 10000,
+        });
+
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Content-Type', response.headers['content-type'] || 'video/mp2t');
+
+        response.data.pipe(res);
+    } catch (e) {
+        console.error('[Proxy Video Error]', targetUrl, e.message);
+        res.status(e.response?.status || 500).send(e.message);
     }
-}));
+});
 
 // --- GIGA API ENDPOINTS ---
 
