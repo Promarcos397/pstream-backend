@@ -112,11 +112,27 @@ async function scrapeVixSrc(id, type, season, episode) {
         const { data } = await scraperAxios.get(url, { headers: getCommonHeaders('https://vixsrc.to'), timeout: 6000 });
         const token = data.match(/token\s*[:=]\s*["']([^"']+)["']/i)?.[1];
         const playlist = data.match(/playlist\s*[:=]\s*["']([^"']+)["']/i)?.[1];
+        
+        // Extract Subtitles (CinePro Style)
+        let subtitles = [];
+        const subtitleMatch = data.match(/window\.subtitles\s*=\s*\[(.*?)\]/s);
+        if (subtitleMatch) {
+            try {
+                const subArray = JSON.parse(`[${subtitleMatch[1]}]`);
+                subtitles = subArray.map(s => ({
+                    url: s.file || s.url,
+                    lang: s.label || s.lang,
+                    label: s.label || s.lang
+                }));
+            } catch (e) { console.warn("Failed to parse VixSrc subtitles JSON"); }
+        }
+
         if (token && playlist) {
             return {
                 success: true,
                 provider: 'VixSrc',
-                sources: [{ url: `${playlist}?token=${token}`, quality: 'auto', isM3U8: true }]
+                sources: [{ url: `${playlist}?token=${token}`, quality: 'auto', isM3U8: true }],
+                subtitles
             };
         }
     } catch (e) {} return null;
@@ -135,10 +151,21 @@ async function scrapeEmbedSu(id, type, season, episode) {
             const first = stringAtob(config.hash).split('.').map(i => i.split('').reverse().join(''));
             const second = JSON.parse(stringAtob(first.join('').split('').reverse().join('')));
             if (second?.length > 0) {
+                // Extract Subtitles from config if present
+                let subtitles = [];
+                if (config.subtitles) {
+                    subtitles = config.subtitles.map(s => ({
+                        url: s.file,
+                        lang: s.label,
+                        label: s.label
+                    }));
+                }
+
                 return {
                     success: true,
                     provider: 'Embed.su',
-                    sources: second.map(s => ({ url: `https://embed.su/api/e/${s.hash}`, quality: 'auto', isM3U8: true }))
+                    sources: second.map(s => ({ url: `https://embed.su/api/e/${s.hash}`, quality: 'auto', isM3U8: true })),
+                    subtitles
                 };
             }
         }
@@ -179,28 +206,44 @@ export async function resolveStream(tmdbId, type, season, episode, imdbId) {
         } catch (e) {}
     }
 
-    // Racing matrix
-    const priority = [
+    // 1. First Priority: Engines (Custom extraction with metadata/subtitles)
+    const engines = [
         scrapeVsEmbed(tmdbId, type, sStr, eStr),
         scrapeVidSrcTo(tmdbId, type, sStr, eStr),
-        // Additional high-reliability mirror: Vidsrc.cc
-        scrapeValidatedMirror('Vidsrc.cc', 'https://vidsrc.cc/v2/embed/{type}/{id}${type === "tv" ? "/{s}/{e}" : ""}', tmdbId, type, sStr, eStr),
         scrapeVixSrc(tmdbId, type, sStr, eStr),
         scrapeEmbedSu(tmdbId, type, sStr, eStr),
-        // Fallbacks
-        scrapeValidatedMirror('VidSrc.vip', 'https://vidsrc.vip/embed/{type}/{id}', tmdbId, type, sStr, eStr),
-        scrapeValidatedMirror('SuperEmbed', 'https://multiembed.mov/?video_id={id}&s={s}&e={e}', tmdbId, type, sStr, eStr),
     ];
 
     try {
-        const winner = await Promise.any(priority.map(p => p.then(res => {
+        const engineWinner = await Promise.any(engines.map(p => p.then(res => {
+            if (res?.success) return res;
+            throw new Error();
+        })));
+        if (engineWinner) {
+            console.log(`[Resolver] 🚀 Engine winner: ${engineWinner.provider}`);
+            if (redis) await redis.setex(cacheKey, 3600, JSON.stringify(engineWinner));
+            return engineWinner;
+        }
+    } catch (e) {
+        console.warn("[Resolver] All engines failed, falling back to mirrors...");
+    }
+
+    // 2. Second Priority: Mirrors (Validated Fast Embeds)
+    const mirrors = [
+        scrapeValidatedMirror('Vidsrc.cc', `https://vidsrc.cc/v2/embed/${type}/${tmdbId}${type === "tv" ? `/${sStr}/${eStr}` : ""}`, tmdbId, type, sStr, eStr),
+        scrapeValidatedMirror('VidSrc.vip', `https://vidsrc.vip/embed/${type}/${tmdbId}`, tmdbId, type, sStr, eStr),
+        scrapeValidatedMirror('SuperEmbed', `https://multiembed.mov/?video_id=${tmdbId}&s=${sStr}&e=${eStr}`, tmdbId, type, sStr, eStr),
+    ];
+
+    try {
+        const mirrorWinner = await Promise.any(mirrors.map(p => p.then(res => {
             if (res?.success) return res;
             throw new Error();
         })));
 
-        if (winner) {
-            if (redis) await redis.setex(cacheKey, 3600, JSON.stringify(winner));
-            return winner;
+        if (mirrorWinner) {
+            if (redis) await redis.setex(cacheKey, 3600, JSON.stringify(mirrorWinner));
+            return mirrorWinner;
         }
     } catch (e) {}
 
