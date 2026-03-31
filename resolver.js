@@ -230,8 +230,50 @@ function scoreSource(result) {
     let score = 0;
     if (result.sources?.some(s => s.isM3U8)) score += 100;
     if (result.subtitles?.length > 0) score += result.subtitles.length;
-    if (result.sources?.some(s => s.url?.includes('1080'))) score += 10;
+    if (result.sources?.some(s => s.url?.includes('1080') || s.quality === '1080p')) score += 10;
     return score;
+}
+
+// ─── FAST RACE ALGORITHM ──────────────────────────────────────────────────────
+
+/**
+ * Races multiple scraping promises. As soon as the FIRST successful stream is found,
+ * starts a short grace period (e.g. 800ms) to allow other providers to finish, 
+ * so we can merge their subtitles. This avoids waiting 7s for the slowest provider.
+ */
+function fastRace(promises, gracePeriodMs = 800, absoluteTimeoutMs = 7000) {
+    return new Promise((resolve) => {
+        let firstWinnerTime = null;
+        let resolvedCount = 0;
+        let winners = [];
+        
+        const absoluteTimer = setTimeout(() => finish(), absoluteTimeoutMs);
+        let graceTimer = null;
+
+        const finish = () => {
+            clearTimeout(absoluteTimer);
+            if (graceTimer) clearTimeout(graceTimer);
+            resolve(winners);
+        };
+
+        promises.forEach(p => {
+            Promise.resolve(p).then(result => {
+                resolvedCount++;
+                if (result && result.success && result.sources?.some(s => s.isM3U8 || (!s.isEmbed && s.url))) {
+                    winners.push(result);
+                    if (!firstWinnerTime) {
+                        firstWinnerTime = Date.now();
+                        // First valid stream found! Start the grace timer.
+                        graceTimer = setTimeout(() => finish(), gracePeriodMs);
+                    }
+                }
+                if (resolvedCount === promises.length) finish();
+            }).catch(() => {
+                resolvedCount++;
+                if (resolvedCount === promises.length) finish();
+            });
+        });
+    });
 }
 
 // ─── MASTER RESOLVER ─────────────────────────────────────────────────────────
@@ -274,12 +316,10 @@ export async function resolveStream(tmdbId, type, season, episode, imdbId, title
         scrapeVsEmbed(tmdbId, type, sStr, eStr),
     ];
 
-    const results = await Promise.allSettled(enginePromises);
+    // Use fastRace instead of Promise.allSettled so we don't wait for slow engines
+    const rawWinners = await fastRace(enginePromises, 800, 7000);
 
-    const winners = results
-        .filter(r => r.status === 'fulfilled' && r.value?.success)
-        .map(r => r.value)
-        .filter(r => r.sources?.some(s => s.isM3U8 || (!s.isEmbed && s.url))) // Strictly no embeds
+    const winners = rawWinners
         .sort((a, b) => scoreSource(b) - scoreSource(a));
 
     if (winners.length === 0) {
