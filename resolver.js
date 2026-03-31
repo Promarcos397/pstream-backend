@@ -3,6 +3,10 @@ import { HttpsProxyAgent } from 'https-proxy-agent';
 import { redis } from './index.js';
 import crypto from 'crypto';
 import { scrapeVsEmbed } from './extractors/vsembed.js';
+import { scrapeVidLink } from './extractors/vidlink.js';
+import { scrapeVidNest } from './extractors/vidnest.js';
+import { scrapeLookMovie } from './extractors/lookmovie.js';
+import { scrapeRidoMovies } from './extractors/ridomovies.js';
 
 /**
  * P-Stream Engine Resolver v6.1.0 (The "Doc-Aligned" Update)
@@ -238,7 +242,7 @@ async function scrapeValidatedMirror(name, template, id, type, s, e) {
 
 // --- MASTER RESOLVER ---
 
-export async function resolveStream(tmdbId, type, season, episode, imdbId) {
+export async function resolveStream(tmdbId, type, season, episode, imdbId, title, year) {
     const cacheKey = `v6_stream:${type}:${tmdbId}:${season || 0}:${episode || 0}`;
     const sStr = String(season || 1);
     const eStr = String(episode || 1);
@@ -252,10 +256,14 @@ export async function resolveStream(tmdbId, type, season, episode, imdbId) {
 
     // 1. First Priority: Engines (Custom extraction with metadata/subtitles)
     const engines = [
-        scrapeVidSrcMe(tmdbId, type, sStr, eStr),
+        scrapeVidLink(tmdbId, type, sStr, eStr),
+        scrapeVidNest(tmdbId, type, sStr, eStr),
+        scrapeLookMovie(tmdbId, type, sStr, eStr, title, year),
+        scrapeRidoMovies(tmdbId, type, sStr, eStr, title, year),
         scrapeVsEmbed(tmdbId, type, sStr, eStr),
         scrapeVixSrc(tmdbId, type, sStr, eStr),
         scrapeEmbedSu(tmdbId, type, sStr, eStr),
+        scrapeVidSrcMe(tmdbId, type, sStr, eStr),
     ];
 
     try {

@@ -393,10 +393,10 @@ app.get('/api/profiles/:profileId/progress/:movieId', (req, res) => {
 });
 
 app.get('/api/stream', async (req, res) => {
-    const { tmdbId, type, season, episode, imdbId } = req.query;
+    const { tmdbId, type, season, episode, imdbId, title, year } = req.query;
     if (!tmdbId || !type) return res.status(400).json({ success: false, error: 'tmdbId and type are required' });
     try {
-        const streamData = await resolveStream(tmdbId, type, season, episode, imdbId);
+        const streamData = await resolveStream(tmdbId, type, season, episode, imdbId, title, year);
         res.json(streamData);
     } catch (e) {
         res.status(500).json({ success: false, error: e.message });
