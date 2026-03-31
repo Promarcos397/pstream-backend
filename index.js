@@ -25,7 +25,7 @@ const cdnCookieJar = new CookieJar();
 const cookieAwareAxios = axiosCookieJarWrapper(axios.create({
     jar: cdnCookieJar,
     withCredentials: true,
-    httpsAgent: proxyAgent,
+    // httpsAgent: proxyAgent, // Disabled. Do NOT route heavy video manifests through the residential proxy.
     proxy: false,
 }));
 
