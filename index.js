@@ -346,44 +346,43 @@ app.get('/proxy/m3u8', async (req, res) => {
 });
 
 // 2. Binary Segment Proxy (Handles /proxy/video)
-// Uses axios with piping to share cookies/proxy with the manifest resolver
-app.get('/proxy/video', async (req, res) => {
-    let targetUrl = req.query.url;
-    if (!targetUrl) return res.status(400).send('No URL provided');
-    targetUrl = decodeURIComponent(targetUrl);
-    
-    const referer = req.query.referer || targetUrl;
-    let origin = '';
-    try { origin = new URL(referer).origin; } catch (e) { origin = referer; }
-
-    const ua = req.headers['x-user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
-
-    const headers = {
-        'User-Agent': ua,
-        'Referer': referer,
-        'Origin': origin,
-        'Accept': '*/*',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache',
-    };
-
-    try {
-        const response = await cookieAwareAxios.get(targetUrl, { 
-            headers,
-            responseType: 'stream', 
-            timeout: 10000,
-        });
-
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        res.setHeader('Content-Type', response.headers['content-type'] || 'video/mp2t');
-
-        response.data.pipe(res);
-    } catch (e) {
-        console.error('[Proxy Video Error]', targetUrl, e.message);
-        res.status(e.response?.status || 500).send(e.message);
+// Uses http-proxy-middleware for robust high-performance binary piping
+const videoProxy = createProxyMiddleware({
+    router: (req) => {
+        try {
+            const url = req.query.url;
+            return url ? decodeURIComponent(url) : null;
+        } catch (e) { return null; }
+    },
+    changeOrigin: true,
+    followRedirects: true,
+    pathRewrite: (path, req) => '', // We only need the target from the router
+    on: {
+        proxyReq: (proxyReq, req, res) => {
+            const referer = req.query.referer || (req.query.url ? decodeURIComponent(req.query.url) : 'https://vidsrc.to/');
+            const ua = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+            
+            proxyReq.setHeader('User-Agent', ua);
+            proxyReq.setHeader('Referer', referer);
+            try { proxyReq.setHeader('Origin', new URL(referer).origin); } catch (_) {}
+            proxyReq.setHeader('Accept', '*/*');
+            proxyReq.setHeader('Sec-Fetch-Dest', 'empty');
+            proxyReq.setHeader('Sec-Fetch-Mode', 'cors');
+            proxyReq.setHeader('Sec-Fetch-Site', 'cross-site');
+        },
+        proxyRes: (proxyRes, req, res) => {
+            // Ensure no caching and permissive CORS for the segment
+            res.setHeader('Access-Control-Allow-Origin', '*');
+            res.setHeader('Cache-Control', 'no-cache');
+        },
+        error: (err, req, res) => {
+            console.error('[Video Proxy Error]', req.query.url, err.message);
+            res.status(502).send('Video Proxy Error: ' + err.message);
+        }
     }
 });
+
+app.get('/proxy/video', videoProxy);
 
 // --- GIGA API ENDPOINTS ---
 
