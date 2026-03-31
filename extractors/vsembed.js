@@ -55,7 +55,9 @@ export async function scrapeVsEmbed(id, type, season, episode) {
             '{v1}': 'neonhorizonworkshops.com',
             '{v2}': 'wanderlynest.com',
             '{v3}': 'orchidpixelgardens.com',
-            '{v4}': 'cloudnestra.com'
+            '{v4}': 'cloudnestra.com',
+            '{v5}': 'pstream-cdn.com',
+            '{cl}': 'cloudnestra.com'
         };
 
         const rawUrls = fileField.split(/\s+or\s+/i);

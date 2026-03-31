@@ -259,24 +259,27 @@ export async function resolveStream(tmdbId, type, season, episode, imdbId) {
     ];
 
     try {
-        const engineWinner = await Promise.any(engines.map(p => p.then(res => {
-            if (res?.success) return res;
-            throw new Error();
-        })));
+        const engineResults = await Promise.allSettled(engines);
+        const winners = engineResults
+            .filter(r => r.status === 'fulfilled' && r.value?.success)
+            .map(r => r.value)
+            .sort((a, b) => (b.sources.some(s => s.isM3U8) ? 1 : 0) - (a.sources.some(s => s.isM3U8) ? 1 : 0));
+
+        const engineWinner = winners[0];
+
         if (engineWinner) {
             console.log(`[Resolver] 🚀 Engine winner: ${engineWinner.provider}`);
             if (redis) await redis.setex(cacheKey, 3600, JSON.stringify(engineWinner));
             return engineWinner;
         }
     } catch (e) {
-        console.warn("[Resolver] All engines failed, falling back to mirrors...");
-        const results = await Promise.allSettled(engines);
-        console.log("Engine failure details:", JSON.stringify(results.map(r => r.status === 'fulfilled' ? r.value : r.reason?.message), null, 2));
+        console.warn("[Resolver] Processing engines error:", e.message);
     }
 
     // 2. Second Priority: Mirrors (Validated Fast Embeds)
     const mirrors = [
         scrapeValidatedMirror('SuperEmbed', `https://multiembed.mov/?video_id=${tmdbId}&s=${sStr}&e=${eStr}`, tmdbId, type, sStr, eStr),
+        scrapeValidatedMirror('VidSrc.xyz', `https://vidsrc.xyz/embed/${type}?tmdb=${tmdbId}${type === 'tv' ? `&season=${sStr}&episode=${eStr}` : ''}`, tmdbId, type, sStr, eStr),
         scrapeValidatedMirror('VidSrc.pro', `https://vidsrc.pro/embed/${type}/${tmdbId}${type === "tv" ? `/${sStr}/${eStr}` : ""}`, tmdbId, type, sStr, eStr),
         scrapeValidatedMirror('VidSrc.in', `https://vidsrc.in/embed/${type}/${tmdbId}${type === "tv" ? `/${sStr}/${eStr}` : ""}`, tmdbId, type, sStr, eStr),
     ];
