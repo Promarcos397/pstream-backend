@@ -27,21 +27,26 @@ export async function getProfile(publicKey) {
 }
 
 export async function updateProfile(publicKey, updates) {
-  const { data, error } = await supabase
-    .from('profiles')
-    .upsert({
-      public_key: publicKey,
-      ...updates,
-      updated_at: new Date().toISOString()
-    }, { onConflict: 'public_key' })
-    .select()
-    .single();
+  try {
+    const { data, error } = await supabase
+      .from('profiles')
+      .upsert({
+        public_key: publicKey,
+        ...updates,
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'public_key' })
+      .select()
+      .single();
 
-  if (error) {
-    console.error('[DB] Error updating profile:', error);
-    throw error;
+    if (error) {
+      console.error('[DB] Supabase Error during updateProfile:', JSON.stringify(error, null, 2));
+      throw new Error(`Profile update failed: ${error.message} (${error.code})`);
+    }
+    return data;
+  } catch (err) {
+    console.error('[DB] Critical Update Error:', err.message);
+    throw err;
   }
-  return data;
 }
 
 export async function deleteProfile(publicKey) {

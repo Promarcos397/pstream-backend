@@ -455,7 +455,12 @@ app.get('/api/sync', authenticateToken, async (req, res) => {
 });
 
 app.post('/api/sync', authenticateToken, async (req, res) => {
-    try { res.json({ success: true, profile: await updateProfile(req.user.publicKey, req.body.updates) }); } catch (e) { res.status(500).json({ error: e.message }); }
+    try { 
+        res.json({ success: true, profile: await updateProfile(req.user.publicKey, req.body.updates) }); 
+    } catch (e) { 
+        console.error('[Sync] Error:', e.message);
+        res.status(500).json({ error: `Sync failed: ${e.message}` }); 
+    }
 });
 
 app.delete('/api/sync', authenticateToken, async (req, res) => {
