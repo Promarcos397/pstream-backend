@@ -271,17 +271,37 @@ app.get('/proxy/m3u8', async (req, res) => {
     let targetUrl = req.query.url;
     if (!targetUrl) return res.status(400).send('No URL provided');
     targetUrl = decodeURIComponent(targetUrl);
-    
-    const referer = req.query.referer || targetUrl;
-    const origin = new URL(referer).origin;
 
-    const ua = req.headers['x-user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+    // --- Parse embedded headers/host params (VidLink & similar CDNs embed these) ---
+    // e.g. https://cdn.example.com/playlist.m3u8?headers={"referer":"...","origin":"..."}&host=https://...
+    let embeddedReferer = req.query.referer || '';
+    let embeddedOrigin = '';
+    let manifestBaseUrl = targetUrl; // used for resolving relative segments
+
+    try {
+        const parsedTarget = new URL(targetUrl);
+        const headersParam = parsedTarget.searchParams.get('headers');
+        const hostParam = parsedTarget.searchParams.get('host');
+
+        if (headersParam) {
+            const embeddedHeaders = JSON.parse(headersParam);
+            if (embeddedHeaders.referer) embeddedReferer = embeddedHeaders.referer;
+            if (embeddedHeaders.origin) embeddedOrigin = embeddedHeaders.origin;
+        }
+        if (hostParam) {
+            manifestBaseUrl = hostParam;
+        }
+    } catch (e) { /* Ignore if URL has no embedded params */ }
+
+    const activeReferer = embeddedReferer || targetUrl;
+    const activeOrigin = embeddedOrigin || (() => { try { return new URL(activeReferer).origin; } catch(_) { return ''; } })();
+
+    const ua = req.headers['x-user-agent'] || USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
 
     // Full browser fingerprint — Cloudflare WAF checks these headers
     const headers = {
         'User-Agent': ua,
-        'Referer': referer,
-        'Origin': origin,
+        'Referer': activeReferer,
         'Accept': '*/*',
         'Accept-Language': 'en-US,en;q=0.9',
         'Cache-Control': 'no-cache',
@@ -289,9 +309,10 @@ app.get('/proxy/m3u8', async (req, res) => {
         'Sec-Fetch-Mode': 'cors',
         'Sec-Fetch-Site': 'cross-site',
     };
+    if (activeOrigin) headers['Origin'] = activeOrigin;
 
     try {
-        const response = await cookieAwareAxios.get(targetUrl, { 
+        const response = await cookieAwareAxios.get(targetUrl, {
             headers,
             responseType: 'text',
             timeout: 8000,
@@ -312,11 +333,11 @@ app.get('/proxy/m3u8', async (req, res) => {
                     return trimmed.replace(/URI="(.*?)"/g, (match, p1) => {
                         let absoluteUrl = p1;
                         if (!p1.startsWith('http')) {
-                            try { absoluteUrl = new URL(p1, targetUrl).href; } catch (e) { return match; }
+                            try { absoluteUrl = new URL(p1, manifestBaseUrl).href; } catch (e) { return match; }
                         }
                         const reqHost = req.get('host');
                         const reqProtocol = req.headers['x-forwarded-proto'] || req.protocol;
-                        const proxyUrl = `${reqProtocol}://${reqHost}/proxy/video?url=${encodeURIComponent(absoluteUrl)}&referer=${encodeURIComponent(referer)}`;
+                        const proxyUrl = `${reqProtocol}://${reqHost}/proxy/video?url=${encodeURIComponent(absoluteUrl)}&referer=${encodeURIComponent(activeReferer)}`;
                         return `URI="${proxyUrl}"`;
                     });
                 }
@@ -326,7 +347,7 @@ app.get('/proxy/m3u8', async (req, res) => {
             // Standard segment/playlist URL
             let absoluteUrl = trimmed;
             if (!trimmed.startsWith('http')) {
-                try { absoluteUrl = new URL(trimmed, targetUrl).href; } catch (e) { return trimmed; }
+                try { absoluteUrl = new URL(trimmed, manifestBaseUrl).href; } catch (e) { return trimmed; }
             }
             
             const isPlaylist = absoluteUrl.includes('.m3u8') || absoluteUrl.includes('m3u8');
@@ -334,7 +355,7 @@ app.get('/proxy/m3u8', async (req, res) => {
             const reqHost = req.get('host');
             const reqProtocol = req.headers['x-forwarded-proto'] || req.protocol;
             
-            return `${reqProtocol}://${reqHost}${proxyPath}?url=${encodeURIComponent(absoluteUrl)}&referer=${encodeURIComponent(referer)}`;
+            return `${reqProtocol}://${reqHost}${proxyPath}?url=${encodeURIComponent(absoluteUrl)}&referer=${encodeURIComponent(activeReferer)}`;
         }).join('\n');
         
         return res.send(rewritten);
