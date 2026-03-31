@@ -285,11 +285,18 @@ export async function resolveStream(tmdbId, type, season, episode, imdbId, title
 
     if (redis) {
         try {
-            const cached = await redis.get(cacheKey);
-            if (cached) {
-                console.log(`[Resolver] ⚡ Cache hit: ${cacheKey}`);
-                return JSON.parse(cached);
-            }
+            // REDIS CACHE DISABLED: 
+            // We cannot reliably cache stream M3U8 URLs because many top-tier 
+            // providers (e.g. VidLink, AutoEmbed) use IP-bound, time-sensitive tokens
+            // in their generated M3U8 links. Serving a 30-minute old link to a new user
+            // guarantees a 403 Forbidden crash. With `fastRace` responding in <800ms, 
+            // real-time resolution is better anyway.
+            
+            // const cached = await redis.get(cacheKey);
+            // if (cached) {
+            //     console.log(`[Resolver] ⚡ Cache hit: ${cacheKey}`);
+            //     return JSON.parse(cached);
+            // }
         } catch (e) {}
     }
 
@@ -341,11 +348,11 @@ export async function resolveStream(tmdbId, type, season, episode, imdbId, title
         `${winner.alternativeSources?.length || 0} alternatives`
     );
 
-    if (redis) {
-        try {
-            await redis.setex(cacheKey, 3600, JSON.stringify(winner));
-        } catch (e) {}
-    }
+    // if (redis) {
+    //     try {
+    //         await redis.setex(cacheKey, 3600, JSON.stringify(winner));
+    //     } catch (e) {}
+    // }
 
     return winner;
 }
