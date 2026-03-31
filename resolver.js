@@ -70,37 +70,81 @@ const scraperAxios = axios.create({
 });
 
 /**
- * 1. VidSrc.to (Official Docs Implementation)
+ * 1. VidSrc.me / VidSrc.pro (New XOR Decryption & M3U8 Extraction)
  */
-async function scrapeVidSrcTo(id, type, season, episode) {
+async function scrapeVidSrcMe(id, type, season, episode) {
     try {
-        const baseUrl = 'https://vidsrc.to';
+        const baseUrl = 'https://vidsrc.me';
         const embedPath = type === 'tv' 
-            ? `/embed/tv/${id}/${season}/${episode}` 
-            : `/embed/movie/${id}`;
+            ? `/embed/tv?tmdb=${id}&season=${season}&episode=${episode}` 
+            : `/embed/movie?tmdb=${id}`;
         
-        const { data: page } = await scraperAxios.get(`${baseUrl}${embedPath}`, { headers: getCommonHeaders(baseUrl) });
-        const dataId = page.match(/data-id="([^"]+)"/)?.[1];
-        if (!dataId) return null;
-
-        // Fetch sources for this media
-        const sourceRes = await scraperAxios.get(`${baseUrl}/ajax/embed/episode/${dataId}/sources`, { 
-            headers: getCommonHeaders(`${baseUrl}${embedPath}`),
-            timeout: 5000
+        const mainUrl = `${baseUrl}${embedPath}`;
+        const { data: page } = await scraperAxios.get(mainUrl, { headers: getCommonHeaders(baseUrl) });
+        
+        // Find Hash
+        const hashMatch = page.match(/data-hash="([^"]+)"/i);
+        if (!hashMatch) return null;
+        const hash = hashMatch[1];
+        
+        // Fetch RCP
+        const rcpUrl = `https://vidsrc.stream/rcp/${hash}`;
+        const { data: rcpPage } = await scraperAxios.get(rcpUrl, { headers: getCommonHeaders(mainUrl) });
+        
+        const dataHMatch = rcpPage.match(/data-h="([^"]+)"/i);
+        const dataIMatch = rcpPage.match(/data-i="([^"]+)"/i);
+        if (!dataHMatch || !dataIMatch) return null;
+        
+        const encodedHex = dataHMatch[1];
+        const seed = dataIMatch[1];
+        
+        const encodedBuffer = Buffer.from(encodedHex, 'hex');
+        let decoded = "";
+        for (let i = 0; i < encodedBuffer.length; i++) {
+            decoded += String.fromCharCode(encodedBuffer[i] ^ seed.charCodeAt(i % seed.length));
+        }
+        const decodedUrl = decoded.startsWith('//') ? `https:${decoded}` : decoded;
+        
+        // Fetch decoded URL for Location redirect without following
+        const locRes = await scraperAxios.get(decodedUrl, {
+            headers: Object.assign({}, getCommonHeaders(rcpUrl), { 'Referer': `https://vidsrc.stream/rcp/${hash}` }),
+            maxRedirects: 0,
+            validateStatus: status => status >= 200 && status < 400
         });
         
-        if (sourceRes.data?.result) {
-            const dec = decryptVidSrc(sourceRes.data.result);
-            if (dec) {
-                // Return the official embed which handles quality/subtitles automatically
-                return {
-                    success: true,
-                    provider: 'VidSrc.to',
-                    sources: [{ url: `${baseUrl}${embedPath}`, quality: 'auto', isEmbed: true }]
-                };
-            }
+        const location = locRes.headers.location;
+        if (!location) return null;
+        
+        // Fetch final pro page
+        const { data: proPage } = await scraperAxios.get(location, { headers: Object.assign({}, getCommonHeaders(rcpUrl), { 'Referer': `https://vidsrc.stream/rcp/${hash}` }) });
+        
+        // Extract M3U8
+        const fileMatch = proPage.match(/file\s*:\s*"([^"]+)"/i) || proPage.match(/file\s*:\s*'([^']+)'/i);
+        if (!fileMatch) return null;
+        
+        let hlsUrl = fileMatch[1];
+        hlsUrl = hlsUrl.replace(/\/\/\S+?=/, ''); // Strip initial obfuscator prefix
+        if (hlsUrl.length > 2) hlsUrl = hlsUrl.substring(2); // Skip 2 chars just like python main.py
+        hlsUrl = hlsUrl.replace(/\/@#@\/[^=\/]+==/g, ''); // Strip inline obfuscator fragments
+        hlsUrl = hlsUrl.replace(/_/g, '/').replace(/-/g, '+'); // Base64 url transform
+        hlsUrl = Buffer.from(hlsUrl, 'base64').toString('utf-8'); // Decode B64 to raw url
+        
+        if (!hlsUrl || (!hlsUrl.endsWith('.m3u8') && !hlsUrl.includes('.m3u8?'))) return null;
+        
+        // Set IP Pass Whitelist
+        const passMatch = proPage.match(/var\s+pass_path\s*=\s*"([^"]+)";/i);
+        if (passMatch) {
+            const passPath = passMatch[1].startsWith('//') ? `https:${passMatch[1]}` : passMatch[1];
+            await scraperAxios.get(passPath, { headers: { 'Referer': hash } }).catch(() => {});
         }
-    } catch (e) {} return null;
+        
+        return {
+            success: true,
+            provider: 'VidSrc PRO',
+            sources: [{ url: hlsUrl, quality: 'auto', isM3U8: true }]
+        };
+
+    } catch (e) { console.error("[VidSrcMe] Extractor Error:", e.message); } return null;
 }
 
 /**
@@ -208,8 +252,8 @@ export async function resolveStream(tmdbId, type, season, episode, imdbId) {
 
     // 1. First Priority: Engines (Custom extraction with metadata/subtitles)
     const engines = [
+        scrapeVidSrcMe(tmdbId, type, sStr, eStr),
         scrapeVsEmbed(tmdbId, type, sStr, eStr),
-        scrapeVidSrcTo(tmdbId, type, sStr, eStr),
         scrapeVixSrc(tmdbId, type, sStr, eStr),
         scrapeEmbedSu(tmdbId, type, sStr, eStr),
     ];
@@ -226,13 +270,15 @@ export async function resolveStream(tmdbId, type, season, episode, imdbId) {
         }
     } catch (e) {
         console.warn("[Resolver] All engines failed, falling back to mirrors...");
+        const results = await Promise.allSettled(engines);
+        console.log("Engine failure details:", JSON.stringify(results.map(r => r.status === 'fulfilled' ? r.value : r.reason?.message), null, 2));
     }
 
     // 2. Second Priority: Mirrors (Validated Fast Embeds)
     const mirrors = [
-        scrapeValidatedMirror('Vidsrc.cc', `https://vidsrc.cc/v2/embed/${type}/${tmdbId}${type === "tv" ? `/${sStr}/${eStr}` : ""}`, tmdbId, type, sStr, eStr),
-        scrapeValidatedMirror('VidSrc.vip', `https://vidsrc.vip/embed/${type}/${tmdbId}`, tmdbId, type, sStr, eStr),
         scrapeValidatedMirror('SuperEmbed', `https://multiembed.mov/?video_id=${tmdbId}&s=${sStr}&e=${eStr}`, tmdbId, type, sStr, eStr),
+        scrapeValidatedMirror('VidSrc.pro', `https://vidsrc.pro/embed/${type}/${tmdbId}${type === "tv" ? `/${sStr}/${eStr}` : ""}`, tmdbId, type, sStr, eStr),
+        scrapeValidatedMirror('VidSrc.in', `https://vidsrc.in/embed/${type}/${tmdbId}${type === "tv" ? `/${sStr}/${eStr}` : ""}`, tmdbId, type, sStr, eStr),
     ];
 
     try {
@@ -242,6 +288,7 @@ export async function resolveStream(tmdbId, type, season, episode, imdbId) {
         })));
 
         if (mirrorWinner) {
+            console.log(`[Resolver] 🚀 Mirror winner: ${mirrorWinner.provider}`);
             if (redis) await redis.setex(cacheKey, 3600, JSON.stringify(mirrorWinner));
             return mirrorWinner;
         }
@@ -251,6 +298,9 @@ export async function resolveStream(tmdbId, type, season, episode, imdbId) {
     return {
         success: true,
         provider: 'Primary Mirror',
-        sources: [{ url: `https://vidsrc.me/embed/${type}?tmdb=${tmdbId}${type === 'tv' ? `&season=${sStr}&episode=${eStr}` : ''}`, isEmbed: true }]
+        sources: [{
+            url: `https://vidsrc.me/embed/${type}?tmdb=${tmdbId}${type === 'tv' ? `&season=${sStr}&episode=${eStr}` : ''}`,
+            isEmbed: true
+        }]
     };
 }
