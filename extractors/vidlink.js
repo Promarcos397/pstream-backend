@@ -37,6 +37,40 @@ export async function scrapeVidLink(tmdbId, type, season, episode) {
         if (!vidlinkData?.stream) return null;
 
         const { stream } = vidlinkData;
+        const playlistUrl = stream.playlist;
+        const streamHeaders = stream.headers || {};
+
+        // Build fetch headers — use embedded referer/origin from VidLink stream headers
+        const referer = streamHeaders.referer || 'https://videostr.net/';
+        const origin = streamHeaders.origin || 'https://videostr.net';
+
+        const fetchHeaders = {
+            ...headers,
+            Referer: referer,
+            Origin: origin,
+        };
+
+        // Pre-fetch the M3U8 manifest NOW (same pod/IP as this scrape session)
+        // This avoids IP-signed CDN token failures when the proxy/frontend fetches later
+        let cachedManifest = null;
+        let manifestBaseUrl = playlistUrl;
+        try {
+            const parsedUrl = new URL(playlistUrl);
+            const hostParam = parsedUrl.searchParams.get('host');
+            if (hostParam) manifestBaseUrl = hostParam;
+
+            const manifestResp = await axios.get(playlistUrl, {
+                headers: fetchHeaders,
+                responseType: 'text',
+                timeout: 8000,
+                maxRedirects: 5
+            });
+            cachedManifest = manifestResp.data;
+        } catch (e) {
+            // If pre-fetch fails, fall back to URL-based proxying
+            console.warn('[VidLink] Manifest pre-fetch failed:', e.message);
+        }
+
         const captions = (stream.captions || []).map(c => ({
             url: c.url,
             lang: c.language || 'Unknown',
@@ -47,10 +81,13 @@ export async function scrapeVidLink(tmdbId, type, season, episode) {
             success: true,
             provider: 'VidLink 🔥 (Direct)',
             sources: [{
-                url: stream.playlist,
+                url: playlistUrl,
                 quality: 'auto',
                 isM3U8: true,
-                headers: stream.headers || headers
+                referer,
+                headers: fetchHeaders,
+                cachedManifest,       // pre-fetched manifest content
+                manifestBaseUrl,      // for resolving relative segment URLs
             }],
             subtitles: captions
         };

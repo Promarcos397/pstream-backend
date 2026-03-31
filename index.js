@@ -418,6 +418,35 @@ app.get('/api/stream', async (req, res) => {
     if (!tmdbId || !type) return res.status(400).json({ success: false, error: 'tmdbId and type are required' });
     try {
         const streamData = await resolveStream(tmdbId, type, season, episode, imdbId, title, year);
+
+        // If a source has a pre-fetched manifest (VidLink IP-signed token fix),
+        // rewrite its relative/absolute segment URLs to go through our proxy,
+        // then embed result as directManifest so the frontend can Blob URL it
+        if (streamData?.sources) {
+            const reqProto = req.headers['x-forwarded-proto'] || req.protocol;
+            const baseProxyUrl = `${reqProto}://${req.get('host')}`;
+
+            streamData.sources = streamData.sources.map(source => {
+                if (!source.cachedManifest) return source;
+
+                const baseUrl = source.manifestBaseUrl || source.url;
+                const referer = source.referer || '';
+
+                const rewritten = source.cachedManifest.split('\n').map(line => {
+                    const t = line.trim();
+                    if (!t || t.startsWith('#')) return t;
+                    let abs = t;
+                    if (!t.startsWith('http')) {
+                        try { abs = new URL(t, baseUrl).href; } catch (_) { return t; }
+                    }
+                    const isM3U8 = abs.includes('.m3u8');
+                    return `${baseProxyUrl}${isM3U8 ? '/proxy/m3u8' : '/proxy/video'}?url=${encodeURIComponent(abs)}&referer=${encodeURIComponent(referer)}`;
+                }).join('\n');
+
+                return { ...source, directManifest: rewritten, cachedManifest: undefined };
+            });
+        }
+
         res.json(streamData);
     } catch (e) {
         res.status(500).json({ success: false, error: e.message });
