@@ -8,7 +8,7 @@ import fs from 'fs';
 import os from 'os';
 import { createChallenge, verifyChallenge } from './utils/challenge.js';
 import { getProfile, updateProfile, deleteProfile } from './utils/db.js';
-import { resolveStream } from './resolver.js';
+import { resolveStream, USER_AGENTS } from './resolver.js';
 import Redis from 'ioredis';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { wrapper as axiosCookieJarWrapper } from 'axios-cookiejar-support';
