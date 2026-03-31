@@ -328,8 +328,13 @@ app.get('/proxy/m3u8', async (req, res) => {
         const rewritten = text.split('\n').map((line) => {
             const trimmed = line.trim();
             if (!trimmed || trimmed.startsWith('#')) {
-                // Keep tags but potentially rewrite URI="..."
-                if (trimmed.startsWith('#EXT-X-KEY') || trimmed.startsWith('#EXT-X-MAP')) {
+                // Rewrite URI="..." in any HLS tag that references a sub-resource.
+                // This covers: #EXT-X-KEY, #EXT-X-MAP (segments), #EXT-X-MEDIA (audio/subtitle playlists)
+                if (
+                    trimmed.startsWith('#EXT-X-KEY') ||
+                    trimmed.startsWith('#EXT-X-MAP') ||
+                    trimmed.startsWith('#EXT-X-MEDIA')
+                ) {
                     return trimmed.replace(/URI="(.*?)"/g, (match, p1) => {
                         let absoluteUrl = p1;
                         if (!p1.startsWith('http')) {
@@ -337,7 +342,11 @@ app.get('/proxy/m3u8', async (req, res) => {
                         }
                         const reqHost = req.get('host');
                         const reqProtocol = req.headers['x-forwarded-proto'] || req.protocol;
-                        const proxyUrl = `${reqProtocol}://${reqHost}/proxy/video?url=${encodeURIComponent(absoluteUrl)}&referer=${encodeURIComponent(activeReferer)}`;
+                        // Audio/subtitle sub-manifests are .m3u8 playlists → route through /proxy/m3u8
+                        // Keys/segments → route through /proxy/video
+                        const isSubManifest = absoluteUrl.includes('.m3u8') || trimmed.startsWith('#EXT-X-MEDIA');
+                        const proxyPath = isSubManifest ? '/proxy/m3u8' : '/proxy/video';
+                        const proxyUrl = `${reqProtocol}://${reqHost}${proxyPath}?url=${encodeURIComponent(absoluteUrl)}&referer=${encodeURIComponent(activeReferer)}`;
                         return `URI="${proxyUrl}"`;
                     });
                 }
