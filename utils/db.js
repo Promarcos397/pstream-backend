@@ -1,3 +1,4 @@
+// Database Access Layer v1.2.1
 import { createClient } from '@supabase/supabase-js';
 import dotenv from 'dotenv';
 
