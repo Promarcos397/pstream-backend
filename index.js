@@ -284,50 +284,49 @@ app.get('/proxy/m3u8', async (req, res) => {
         'Origin': origin,
         'Accept': '*/*',
         'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Connection': 'keep-alive',
+        'Cache-Control': 'no-cache',
         'Sec-Fetch-Dest': 'empty',
         'Sec-Fetch-Mode': 'cors',
         'Sec-Fetch-Site': 'cross-site',
-        'sec-ch-ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"Windows"',
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache',
     };
 
     try {
         const response = await cookieAwareAxios.get(targetUrl, { 
             headers,
             responseType: 'text',
+            timeout: 8000,
+            maxRedirects: 5
         });
 
         res.setHeader('Access-Control-Allow-Origin', '*');
         res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
         
         const text = response.data;
+        if (!text || typeof text !== 'string') throw new Error('Empty manifest response');
         
         const rewritten = text.split('\n').map((line) => {
             const trimmed = line.trim();
-            if (!trimmed) return line;
-            
-            // Rewrite URI="..." attributes (e.g. for Encryption Keys)
-            if (trimmed.startsWith('#')) {
-                return trimmed.replace(/URI="(.*?)"/g, (match, p1) => {
-                    let absoluteUrl = p1;
-                    if (!p1.startsWith('http')) absoluteUrl = new URL(p1, targetUrl).href;
-                    // Keys always map to binary video proxy
-                    const reqHost = req.get('host');
-                    const reqProtocol = req.headers['x-forwarded-proto'] || req.protocol;
-                    const proxyUrl = `${reqProtocol}://${reqHost}/proxy/video?url=${encodeURIComponent(absoluteUrl)}&referer=${encodeURIComponent(referer)}`;
-                    return `URI="${proxyUrl}"`;
-                });
+            if (!trimmed || trimmed.startsWith('#')) {
+                // Keep tags but potentially rewrite URI="..."
+                if (trimmed.startsWith('#EXT-X-KEY') || trimmed.startsWith('#EXT-X-MAP')) {
+                    return trimmed.replace(/URI="(.*?)"/g, (match, p1) => {
+                        let absoluteUrl = p1;
+                        if (!p1.startsWith('http')) {
+                            try { absoluteUrl = new URL(p1, targetUrl).href; } catch (e) { return match; }
+                        }
+                        const reqHost = req.get('host');
+                        const reqProtocol = req.headers['x-forwarded-proto'] || req.protocol;
+                        const proxyUrl = `${reqProtocol}://${reqHost}/proxy/video?url=${encodeURIComponent(absoluteUrl)}&referer=${encodeURIComponent(referer)}`;
+                        return `URI="${proxyUrl}"`;
+                    });
+                }
+                return trimmed;
             }
             
-            // Rewrite Standard Standalone URIs (segments or sub-playlists)
+            // Standard segment/playlist URL
             let absoluteUrl = trimmed;
             if (!trimmed.startsWith('http')) {
-                absoluteUrl = new URL(trimmed, targetUrl).href;
+                try { absoluteUrl = new URL(trimmed, targetUrl).href; } catch (e) { return trimmed; }
             }
             
             const isPlaylist = absoluteUrl.includes('.m3u8') || absoluteUrl.includes('m3u8');
@@ -340,8 +339,9 @@ app.get('/proxy/m3u8', async (req, res) => {
         
         return res.send(rewritten);
     } catch (e) {
-        console.error('[M3U8 Proxy Error]', targetUrl, e.message);
-        res.status(500).send('M3U8 Proxy Error: ' + e.message);
+        console.error(`[M3U8 Proxy Error] ${targetUrl} | ${e.message}`);
+        const status = e.response?.status || 500;
+        res.status(status).send(`M3U8 Proxy Error (${status}): ${e.message}`);
     }
 });
 

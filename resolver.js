@@ -183,6 +183,8 @@ export async function resolveStream(tmdbId, type, season, episode, imdbId) {
     const priority = [
         scrapeVsEmbed(tmdbId, type, sStr, eStr),
         scrapeVidSrcTo(tmdbId, type, sStr, eStr),
+        // Additional high-reliability mirror: Vidsrc.cc
+        scrapeValidatedMirror('Vidsrc.cc', 'https://vidsrc.cc/v2/embed/{type}/{id}${type === "tv" ? "/{s}/{e}" : ""}', tmdbId, type, sStr, eStr),
         scrapeVixSrc(tmdbId, type, sStr, eStr),
         scrapeEmbedSu(tmdbId, type, sStr, eStr),
         // Fallbacks
