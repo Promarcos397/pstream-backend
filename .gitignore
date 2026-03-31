@@ -5,5 +5,11 @@ assets/
 *.log
 package-lock.json
 legacy-providers/
+legacy-frontend/
 *.zip
 temp/
+research_lab/
+backend.log
+p-stream-production (6).zip
+providers-production (2).zip
+backend-master (3).zip

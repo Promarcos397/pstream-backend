@@ -25,7 +25,9 @@
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
     "tough-cookie": "^6.0.1",
-    "tweetnacl": "^1.0.3"
+    "tweetnacl": "^1.0.3",
+    "cheerio": "1.0.0-rc.12",
+    "unpacker": "^1.0.1"
   },
   "devDependencies": {
     "nodemon": "^3.1.0"
