@@ -8,7 +8,7 @@ import fs from 'fs';
 import os from 'os';
 import { createChallenge, verifyChallenge } from './utils/challenge.js';
 import { getProfile, updateProfile, deleteProfile } from './utils/db.js';
-import { resolveStream } from './resolver.js';
+import { resolveStreaming } from './resolver.js';
 import { USER_AGENTS } from './utils/constants.js';
 import Redis from 'ioredis';
 import { HttpsProxyAgent } from 'https-proxy-agent';
@@ -498,7 +498,7 @@ app.get('/api/stream', async (req, res) => {
     const { tmdbId, type, season, episode, imdbId, title, year } = req.query;
     if (!tmdbId || !type) return res.status(400).json({ success: false, error: 'tmdbId and type are required' });
     try {
-        const streamData = await resolveStream(tmdbId, type, season, episode, imdbId, title, year);
+        const streamData = await resolveStreaming(tmdbId, type, season, episode, title, year);
 
         // If a source has a pre-fetched manifest (VidLink IP-signed token fix),
         // rewrite its relative/absolute segment URLs to go through our proxy,
