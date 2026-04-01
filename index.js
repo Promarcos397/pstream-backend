@@ -268,12 +268,27 @@ app.get('/healthcheck', async (req, res) => {
 // 1. M3U8 Manifest Rewriter (Intercepts /proxy/m3u8)
 // This solves the levelLoadError by preventing HLS.js from making broken relative requests without ?url=
 app.get('/proxy/m3u8', async (req, res) => {
-    let targetUrl = req.query.url;
+    // BUG FIX: Express automatically decodes query parameters, which corrupts 
+    // base64 tokens (like %2B -> +) in sensitive stream provider URLs (VidLink, etc).
+    // We manually extract the RAW url parameter from the original request URL.
+    let targetUrl = '';
+    try {
+        const rawUrl = req.originalUrl || req.url;
+        const match = rawUrl.match(/[?&]url=([^&]+)/);
+        if (match) {
+            targetUrl = decodeURIComponent(match[1]);
+            // If the URL was double-encoded (common in our segment rewrites), decode once more
+            if (targetUrl.includes('%')) {
+                const secondTry = decodeURIComponent(targetUrl);
+                // Only keep second decode if it looks like a valid protocol (safe safety check)
+                if (secondTry.startsWith('http')) targetUrl = secondTry;
+            }
+        }
+    } catch (e) {
+        targetUrl = req.query.url; // Fallback to Express default if manual parse fails
+    }
+
     if (!targetUrl) return res.status(400).send('No URL provided');
-    
-    // BUG FIX: Express automatically decodes query parameters. 
-    // Double-decoding targetUrl corrupts base64 signature tokens (like %2B -> +) in VidLink URLs!
-    // targetUrl = decodeURIComponent(targetUrl);
 
     // --- Parse embedded headers/host params (VidLink & similar CDNs embed these) ---
     // e.g. https://cdn.example.com/playlist.m3u8?headers={"referer":"...","origin":"..."}&host=https://...

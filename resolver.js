@@ -39,6 +39,8 @@ import { scrapeRidoMovies } from './extractors/ridomovies.js';
 import { scrapeVsEmbed } from './extractors/vsembed.js';
 import { scrapeVidZee } from './extractors/vidzee.js';
 import { scrapeVidSrc } from './extractors/vidsrcru.js';
+import { scrapeVixSrc } from './extractors/vixsrc.js';
+import { scrapeUembed } from './extractors/uembed.js';
 
 export const USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -58,36 +60,7 @@ const scraperAxios = axios.create({ httpsAgent, proxy: false, timeout: 7000 });
 
 // ─── INLINE ENGINES (TMDB-only, no title needed) ──────────────────────────────
 
-async function scrapeVixSrc(tmdbId, type, season, episode) {
-    try {
-        const url = `https://vixsrc.to/embed/${type}/${tmdbId}${type === 'tv' ? `/${season}/${episode}` : ''}`;
-        const { data } = await scraperAxios.get(url, {
-            headers: { 'User-Agent': getRandomUA(), Referer: 'https://vixsrc.to' }
-        });
-        const token = data.match(/token\s*[:=]\s*["']([^"']+)["']/i)?.[1];
-        const playlist = data.match(/playlist\s*[:=]\s*["']([^"']+)["']/i)?.[1];
-
-        let subtitles = [];
-        const subMatch = data.match(/window\.subtitles\s*=\s*\[(.*?)\]/s);
-        if (subMatch) {
-            try {
-                subtitles = JSON.parse(`[${subMatch[1]}]`).map(s => ({
-                    url: s.file || s.url, lang: s.label || s.lang, label: s.label || s.lang
-                }));
-            } catch (e) {}
-        }
-
-        if (token && playlist) {
-            return {
-                success: true,
-                provider: 'VixSrc ⚡',
-                sources: [{ url: `${playlist}?token=${token}`, quality: 'auto', isM3U8: true }],
-                subtitles
-            };
-        }
-    } catch (e) {}
-    return null;
-}
+// ScrapeVixSrc removed from inline — now imported from extractors/vixsrc.js
 
 async function scrapeEmbedSuDirect(tmdbId, type, season, episode) {
     // embed.su returns final M3U8-resolvable hashes — no iframe presented to user
@@ -319,6 +292,7 @@ export async function resolveStream(tmdbId, type, season, episode, imdbId, title
         scrapeZoeChip(tmdbId, type, sStr, eStr, title, year),
         scrapeRidoMovies(tmdbId, type, sStr, eStr, title, year),
         scrapeVixSrc(tmdbId, type, sStr, eStr),
+        scrapeUembed(tmdbId, type, sStr, eStr),
         scrapeEmbedSuDirect(tmdbId, type, sStr, eStr),
         scrapeVsEmbed(tmdbId, type, sStr, eStr),
     ];
