@@ -294,6 +294,12 @@ app.get('/proxy/m3u8', async (req, res) => {
         if (hostParam) {
             manifestBaseUrl = hostParam;
         }
+
+        if (headersParam || hostParam) {
+            parsedTarget.searchParams.delete('headers');
+            parsedTarget.searchParams.delete('host');
+            targetUrl = parsedTarget.toString(); // STRIPPED URL FOR CDN FETCH
+        }
     } catch (e) { /* Ignore if URL has no embedded params */ }
 
     const activeReferer = embeddedReferer || targetUrl;
