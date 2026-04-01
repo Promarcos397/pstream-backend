@@ -318,7 +318,11 @@ app.get('/proxy/m3u8', async (req, res) => {
     
     const reqHost = req.headers.host || req.get('host');
     const reqProtocol = req.headers['x-forwarded-proto'] || req.protocol;
-    const ua = req.headers['x-user-agent'] || USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+    const sensitiveDomains = ['storm', 'vodvidl', 'megacloud', 'rabbitstream', 'vizcloud', 'moshcloud'];
+    const isSensitive = sensitiveDomains.some(d => targetUrl.includes(d));
+    
+    // Standardize User-Agent to match Scraper (UA consistency is critical for IP-signed tokens)
+    const ua = req.headers['x-user-agent'] || USER_AGENTS[0];
 
     try {
         const axiosHeaders = {
@@ -332,8 +336,10 @@ app.get('/proxy/m3u8', async (req, res) => {
 
         const response = await cookieAwareAxios.get(targetUrl, {
             headers: axiosHeaders,
+            httpsAgent: isSensitive ? proxyAgent : undefined, // AUTO-PROXY for sensitive domains
             responseType: 'text',
-            timeout: 10000
+            timeout: isSensitive ? 15000 : 10000,
+            proxy: false
         });
 
         res.setHeader('Access-Control-Allow-Origin', '*');
@@ -420,7 +426,10 @@ app.get('/proxy/video', async (req, res) => {
 
     const referer = embeddedReferer || targetUrl;
     const origin = (() => { try { return new URL(referer).origin; } catch(_) { return ''; } })();
-    const ua = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+
+    const sensitiveDomains = ['storm', 'vodvidl', 'megacloud', 'rabbitstream', 'vizcloud', 'moshcloud'];
+    const isSensitive = sensitiveDomains.some(d => targetUrl.includes(d));
+    const ua = USER_AGENTS[0];
 
     try {
         const response = await cookieAwareAxios.get(targetUrl, {
@@ -431,8 +440,10 @@ app.get('/proxy/video', async (req, res) => {
                 'Accept': '*/*',
                 'Connection': 'keep-alive'
             },
+            httpsAgent: isSensitive ? proxyAgent : undefined, // AUTO-PROXY for segments too
             responseType: 'stream',
-            timeout: 15000
+            timeout: isSensitive ? 30000 : 15000,
+            proxy: false
         });
 
         // Copy critical headers from backend to client

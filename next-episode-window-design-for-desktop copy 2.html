@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Next Episode Preview Popup</title>
+    <style>
+        /* Base Reset & Centering for Demo */
+        body,
+        html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #0b0b0b;
+            color: #ffffff;
+            font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        /* --- Next Episode Popup Container --- */
+        .next-episode-popup {
+            width: 650px;
+            /* Precise width to match the layout proportions */
+            background-color: #141414;
+            /* Deep dark background for the content area */
+            border-radius: 4px;
+            box-shadow: 0px 10px 30px rgba(0, 0, 0, 0.8);
+            overflow: hidden;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        /* Header Section */
+        .popup-header {
+            background-color: #262626;
+            /* Slightly lighter top bar */
+            padding: 20px 25px;
+            font-size: 28px;
+            font-weight: 700;
+            border-bottom: 1px solid #000000;
+        }
+
+        /* Content Section */
+        .popup-content {
+            display: flex;
+            padding: 25px;
+            gap: 25px;
+            /* Spacing between image and text */
+            align-items: flex-start;
+        }
+
+        /* Thumbnail & Play Overlay */
+        .thumbnail-wrapper {
+            position: relative;
+            width: 260px;
+            /* 16:9 aspect ratio width */
+            height: 146px;
+            /* 16:9 aspect ratio height */
+            flex-shrink: 0;
+            border-radius: 2px;
+            overflow: hidden;
+            background-color: #333;
+            cursor: pointer;
+        }
+
+        .thumbnail-img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transition: transform 0.3s ease;
+        }
+
+        /* Subtle dark overlay to make the play button pop */
+        .thumbnail-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.2);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            transition: background 0.2s ease;
+        }
+
+        .thumbnail-wrapper:hover .thumbnail-overlay {
+            background: rgba(0, 0, 0, 0.4);
+        }
+
+        /* Pure SVG Play Button */
+        .play-icon {
+            width: 50px;
+            height: 50px;
+            fill: rgba(255, 255, 255, 0.85);
+            filter: drop-shadow(0px 2px 5px rgba(0, 0, 0, 0.6));
+            transition: transform 0.2s ease, fill 0.2s ease;
+        }
+
+        .thumbnail-wrapper:hover .play-icon {
+            transform: scale(1.1);
+            fill: #ffffff;
+        }
+
+        /* Text Content Styling */
+        .text-info {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            padding-top: 2px;
+            /* Slight alignment tweak to match image */
+        }
+
+        .episode-title-block {
+            display: flex;
+            align-items: baseline;
+            font-size: 22px;
+            font-weight: 700;
+        }
+
+        .episode-number {
+            margin-right: 18px;
+        }
+
+        .episode-description {
+            font-size: 18px;
+            line-height: 1.4;
+            color: #ffffff;
+            /* Brighter white to match the screenshot */
+            display: -webkit-box;
+            -webkit-line-clamp: 4;
+            /* Truncates if too long */
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+            font-weight: 400;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="next-episode-popup">
+
+        <div class="popup-header">
+            Next episode
+        </div>
+
+        <div class="popup-content">
+
+            <div class="thumbnail-wrapper">
+                <img src="https://picsum.photos/id/1025/400/225" alt="Episode Thumbnail" class="thumbnail-img">
+                <div class="thumbnail-overlay">
+                    <svg class="play-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M8 5v14l11-7z" />
+                    </svg>
+                </div>
+            </div>
+
+            <div class="text-info">
+                <div class="episode-title-block">
+                    <span class="episode-number">21</span>
+                    <span class="episode-name">Tempest</span>
+                </div>
+                <div class="episode-description">
+                    As Smallville's teens prepare for the spring formal, a dangerous spy stalks Clark. Lex hatches a
+                    plan to foil his father.
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+</body>
+
+</html>

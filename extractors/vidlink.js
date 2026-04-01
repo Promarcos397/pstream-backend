@@ -1,11 +1,17 @@
 import axios from 'axios';
+import { HttpsProxyAgent } from 'https-proxy-agent';
+import { USER_AGENTS } from '../resolver.js';
 
 const API_BASE = 'https://enc-dec.app/api';
 const VIDLINK_BASE = 'https://vidlink.pro/api/b';
 
+const proxyUrl = process.env.RESIDENTIAL_PROXY_URL;
+const proxyAgent = proxyUrl ? new HttpsProxyAgent(proxyUrl) : undefined;
+
+const UA = USER_AGENTS[0]; // Standardize on one for token consistency
+
 const headers = {
-  'User-Agent':
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36',
+  'User-Agent': UA,
   Connection: 'keep-alive',
   Referer: 'https://vidlink.pro/',
   Origin: 'https://vidlink.pro',
@@ -45,9 +51,12 @@ export async function scrapeVidLink(tmdbId, type, season, episode) {
         const origin = streamHeaders.origin || 'https://videostr.net';
 
         const fetchHeaders = {
-            ...headers,
-            Referer: referer,
-            Origin: origin,
+            'User-Agent': UA,
+            'Referer': referer,
+            'Origin': origin,
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Cache-Control': 'no-cache'
         };
 
         // Pre-fetch the M3U8 manifest NOW (same pod/IP as this scrape session)
@@ -61,9 +70,11 @@ export async function scrapeVidLink(tmdbId, type, season, episode) {
 
             const manifestResp = await axios.get(playlistUrl, {
                 headers: fetchHeaders,
+                httpsAgent: proxyAgent, // IMPORTANT: Use residential proxy
                 responseType: 'text',
-                timeout: 8000,
-                maxRedirects: 5
+                timeout: 12000,
+                maxRedirects: 5,
+                proxy: false
             });
             cachedManifest = manifestResp.data;
         } catch (e) {

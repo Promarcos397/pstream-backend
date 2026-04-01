@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Perfected Netflix Episodes UI</title>
+    <style>
+        /* Base Reset & Centering */
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #0b0b0b;
+            color: #ffffff;
+            font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        /* The Responsive Window Container */
+        .window-overlay {
+            width: 95vw;
+            max-width: 800px; 
+            height: 90vh;
+            max-height: 700px; 
+            background-color: #262626; /* Exact inactive background color */
+            border-radius: 2px; /* Sharper corners */
+            border: 2px solid #ffffff; 
+            display: flex;
+            flex-direction: column;
+            box-sizing: border-box;
+            box-shadow: 0px 20px 50px rgba(0,0,0,0.9);
+            overflow: hidden;
+            position: relative;
+        }
+
+        /* View Toggle Classes */
+        .view {
+            display: flex;
+            flex-direction: column;
+            width: 100%;
+            height: 100%;
+            position: absolute;
+            top: 0;
+            left: 0;
+            transition: opacity 0.2s ease;
+        }
+        .view.hidden {
+            opacity: 0;
+            pointer-events: none;
+            z-index: 1;
+        }
+        .view.active {
+            opacity: 1;
+            pointer-events: auto;
+            z-index: 2;
+        }
+
+        /* ------------------ HEADER STYLES ------------------ */
+        .header-section {
+            display: flex;
+            align-items: center;
+            padding: 25px 35px; 
+            font-size: 28px; 
+            font-weight: 700;
+            border-bottom: 2px solid #ffffff; /* Crisp white divider */
+            background-color: #262626;
+            flex-shrink: 0;
+        }
+        
+        .episodes-header-btn {
+            cursor: pointer;
+            transition: color 0.2s;
+            display: flex;
+            align-items: center;
+        }
+        .episodes-header-btn:hover {
+            color: #b3b3b3;
+        }
+        .back-arrow {
+            margin-right: 20px;
+            font-weight: 300; /* Thinner arrow */
+            font-size: 26px;
+        }
+
+        /* ------------------ SCROLLABLE LIST ------------------ */
+        .scroll-list {
+            flex-grow: 1;
+            overflow-y: auto;
+            overflow-x: hidden;
+            -webkit-overflow-scrolling: touch; 
+        }
+        
+        /* Advanced Scrollbar to match target exactly */
+        .scroll-list::-webkit-scrollbar { 
+            width: 12px; 
+        }
+        .scroll-list::-webkit-scrollbar-track { 
+            background: transparent; 
+            border-left: 1px solid rgba(255,255,255,0.05);
+        }
+        .scroll-list::-webkit-scrollbar-thumb {
+            background: #666;
+            border-radius: 6px;
+            border: 3px solid #262626; /* Creates padding around the thumb */
+        }
+        .scroll-list::-webkit-scrollbar-thumb:hover { 
+            background: #888; 
+        }
+        /* Top Arrow */
+        .scroll-list::-webkit-scrollbar-button:single-button:vertical:decrement {
+            height: 15px; width: 12px;
+            background-color: transparent;
+            background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100' fill='rgb(150, 150, 150)'><polygon points='50,30 90,80 10,80'/></svg>");
+            background-size: 10px;
+            background-repeat: no-repeat;
+            background-position: center;
+        }
+        /* Bottom Arrow */
+        .scroll-list::-webkit-scrollbar-button:single-button:vertical:increment {
+            height: 15px; width: 12px;
+            background-color: transparent;
+            background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100' fill='rgb(150, 150, 150)'><polygon points='10,20 90,20 50,70'/></svg>");
+            background-size: 10px;
+            background-repeat: no-repeat;
+            background-position: center;
+        }
+
+        /* ------------------ EPISODES VIEW STYLES ------------------ */
+        .episode-item {
+            padding: 30px 35px; 
+            border-bottom: 1px solid transparent;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        .episode-item:hover:not(.active) {
+            background-color: rgba(255, 255, 255, 0.05);
+        }
+        .episode-item.active {
+            background-color: #121212; /* Much darker background for active */
+            cursor: default;
+        }
+        .episode-main {
+            display: flex;
+            align-items: center;
+        }
+        .ep-num {
+            font-size: 20px; 
+            font-weight: 700;
+            width: 35px; /* Tighter gap between number and title */
+            flex-shrink: 0;
+        }
+        .ep-title {
+            font-size: 20px; 
+            font-weight: 700;
+            flex-grow: 1;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            padding-right: 30px;
+        }
+        .progress-bar {
+            width: 140px; 
+            height: 2px; /* Thinner, precise line */
+            background-color: #555; 
+            flex-shrink: 0;
+            overflow: hidden;
+        }
+        .progress-fill {
+            height: 100%;
+            background-color: #e50914; /* Exact Netflix Red */
+        }
+        .episode-details {
+            display: flex;
+            margin-top: 25px; 
+            gap: 20px; 
+            align-items: flex-start;
+            animation: fadeIn 0.3s ease-in-out;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-5px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .ep-thumb {
+            width: 220px; 
+            height: 124px; 
+            background-color: #333;
+            border-radius: 0px; /* PERFECTLY SHARP CORNERS */
+            object-fit: cover;
+            flex-shrink: 0;
+        }
+        .ep-desc {
+            margin: 0;
+            font-size: 18px; 
+            line-height: 1.4;
+            color: #ffffff; /* Brighter white to match target */
+            display: -webkit-box;
+            -webkit-line-clamp: 5; 
+            -webkit-box-orient: vertical;  
+            overflow: hidden;
+        }
+
+        /* ------------------ SEASONS VIEW STYLES ------------------ */
+        .season-item {
+            padding: 25px 25px 25px 70px;
+            font-size: 22px;
+            font-weight: 700;
+            cursor: pointer;
+            position: relative;
+            border: 2px solid transparent; 
+        }
+        .season-item:hover {
+            background-color: rgba(255, 255, 255, 0.05);
+        }
+        .season-item.active {
+            border: 2px solid #ffffff;
+            background-color: #262626;
+        }
+        .season-check {
+            position: absolute;
+            left: 25px;
+            top: 50%;
+            transform: translateY(-50%);
+            font-weight: 300;
+            font-size: 24px;
+            display: none;
+        }
+        .season-item.active .season-check {
+            display: block;
+        }
+
+        /* Loading State */
+        .loading {
+            padding: 40px;
+            text-align: center;
+            color: #b3b3b3;
+            font-size: 20px;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="window-overlay">
+        
+        <div id="view-episodes" class="view active">
+            <div class="header-section">
+                <div class="episodes-header-btn" onclick="toggleViews()">
+                    <span class="back-arrow">&#8592;</span> 
+                    <span id="current-season-title">Season 1</span>
+                </div>
+            </div>
+            <div class="scroll-list" id="episodes-container">
+                <div class="loading">Loading episodes...</div>
+            </div>
+        </div>
+
+        <div id="view-seasons" class="view hidden">
+            <div class="header-section">
+                <span id="show-title">Smallville</span>
+            </div>
+            <div class="scroll-list" id="seasons-container">
+                <div class="loading">Loading seasons...</div>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        const API_KEY = 'c477878444affbf19e4818802309df39';
+        const SHOW_ID = 4604; 
+        let currentSeason = 1;
+
+        const viewEpisodes = document.getElementById('view-episodes');
+        const viewSeasons = document.getElementById('view-seasons');
+
+        function toggleViews() {
+            if (viewEpisodes.classList.contains('active')) {
+                viewEpisodes.classList.remove('active');
+                viewEpisodes.classList.add('hidden');
+                viewSeasons.classList.remove('hidden');
+                viewSeasons.classList.add('active');
+            } else {
+                viewSeasons.classList.remove('active');
+                viewSeasons.classList.add('hidden');
+                viewEpisodes.classList.remove('hidden');
+                viewEpisodes.classList.add('active');
+            }
+        }
+
+        async function init() {
+            await fetchShowDetails();
+            await fetchEpisodes(currentSeason);
+        }
+
+        async function fetchShowDetails() {
+            try {
+                const response = await fetch(`https://api.themoviedb.org/3/tv/${SHOW_ID}?api_key=${API_KEY}`);
+                const data = await response.json();
+                
+                document.getElementById('show-title').innerText = data.name;
+                renderSeasons(data.seasons);
+            } catch (error) {
+                console.error("Error fetching show data:", error);
+            }
+        }
+
+        function renderSeasons(seasonsData) {
+            const container = document.getElementById('seasons-container');
+            container.innerHTML = '';
+
+            const regularSeasons = seasonsData.filter(s => s.season_number > 0);
+
+            regularSeasons.forEach(season => {
+                const isSelected = season.season_number === currentSeason;
+                const itemDiv = document.createElement('div');
+                itemDiv.className = `season-item ${isSelected ? 'active' : ''}`;
+                
+                itemDiv.innerHTML = `
+                    <span class="season-check">✓</span>
+                    Season ${season.season_number}
+                `;
+
+                itemDiv.addEventListener('click', () => {
+                    document.querySelectorAll('.season-item').forEach(el => el.classList.remove('active'));
+                    itemDiv.classList.add('active');
+                    
+                    currentSeason = season.season_number;
+                    document.getElementById('current-season-title').innerText = `Season ${currentSeason}`;
+                    
+                    toggleViews();
+                    fetchEpisodes(currentSeason);
+                });
+
+                container.appendChild(itemDiv);
+            });
+        }
+
+        async function fetchEpisodes(seasonNum) {
+            const container = document.getElementById('episodes-container');
+            container.innerHTML = `<div class="loading">Loading Season ${seasonNum}...</div>`;
+            
+            try {
+                const response = await fetch(`https://api.themoviedb.org/3/tv/${SHOW_ID}/season/${seasonNum}?api_key=${API_KEY}`);
+                const data = await response.json();
+                renderEpisodes(data.episodes);
+            } catch (error) {
+                container.innerHTML = `<div class="loading">Failed to load episodes.</div>`;
+            }
+        }
+
+        function renderEpisodes(episodes) {
+            const container = document.getElementById('episodes-container');
+            container.innerHTML = ''; 
+
+            episodes.forEach((ep) => {
+                const isTargetEpisode = (currentSeason === 1 && ep.episode_number === 20);
+                
+                const stillUrl = ep.still_path 
+                    ? `https://image.tmdb.org/t/p/w500${ep.still_path}` 
+                    : 'https://via.placeholder.com/400x225/333333/666666?text=No+Image';
+
+                let progress = '0%';
+                if (ep.episode_number < 20) progress = '100%';
+                if (ep.episode_number === 20) progress = '75%';
+
+                const itemDiv = document.createElement('div');
+                itemDiv.className = `episode-item ${isTargetEpisode ? 'active' : ''}`;
+                
+                itemDiv.innerHTML = `
+                    <div class="episode-main">
+                        <span class="ep-num">${ep.episode_number}</span>
+                        <span class="ep-title">${ep.name}</span>
+                        <div class="progress-bar"><div class="progress-fill" style="width: ${progress};"></div></div>
+                    </div>
+                `;
+
+                if (isTargetEpisode) {
+                    appendDetails(itemDiv, stillUrl, ep.overview);
+                }
+
+                itemDiv.addEventListener('click', () => {
+                    document.querySelectorAll('.episode-item').forEach(el => {
+                        el.classList.remove('active');
+                        const details = el.querySelector('.episode-details');
+                        if(details) details.remove();
+                    });
+
+                    itemDiv.classList.add('active');
+                    appendDetails(itemDiv, stillUrl, ep.overview);
+                    
+                    setTimeout(() => {
+                        itemDiv.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                    }, 50);
+                });
+
+                container.appendChild(itemDiv);
+            });
+
+            if (currentSeason === 1) {
+                setTimeout(() => {
+                    const ep20 = document.querySelector('.episode-item.active');
+                    if(ep20) ep20.scrollIntoView({ block: 'center' });
+                }, 100);
+            }
+        }
+
+        function appendDetails(parentDiv, imgUrl, description) {
+            const detailsDiv = document.createElement('div');
+            detailsDiv.className = 'episode-details';
+            detailsDiv.innerHTML = `
+                <img src="${imgUrl}" alt="Episode Thumbnail" class="ep-thumb">
+                <p class="ep-desc">${description || "No description available."}</p>
+            `;
+            parentDiv.appendChild(detailsDiv);
+        }
+
+        init();
+    </script>
+</body>
+</html>
