@@ -293,6 +293,7 @@ app.get('/proxy/m3u8', async (req, res) => {
     // --- Resolve original base URL for relative link resolution ---
     let manifestBaseUrl = targetUrl;
     let embeddedReferer = req.query.referer || '';
+    
     try {
         const parsedTarget = new URL(targetUrl);
         const hostParam = parsedTarget.searchParams.get('host');
@@ -300,23 +301,37 @@ app.get('/proxy/m3u8', async (req, res) => {
         
         const headersParam = parsedTarget.searchParams.get('headers');
         if (headersParam) {
-            const headers = JSON.parse(headersParam);
-            if (headers.referer) embeddedReferer = headers.referer;
+            try {
+                const headers = JSON.parse(headersParam);
+                if (headers.referer) embeddedReferer = headers.referer;
+            } catch (e) {}
         }
+
+        // STRIP internal params before requesting the actual CDN
+        parsedTarget.searchParams.delete('host');
+        parsedTarget.searchParams.delete('headers');
+        targetUrl = parsedTarget.toString();
     } catch (e) {}
 
     const activeReferer = embeddedReferer || targetUrl;
+    const activeOrigin = (() => { try { return new URL(activeReferer).origin; } catch(_) { return ''; } })();
+    
     const reqHost = req.headers.host || req.get('host');
     const reqProtocol = req.headers['x-forwarded-proto'] || req.protocol;
     const ua = req.headers['x-user-agent'] || USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
 
     try {
+        const axiosHeaders = {
+            'User-Agent': ua,
+            'Referer': activeReferer,
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Cache-Control': 'no-cache'
+        };
+        if (activeOrigin) axiosHeaders['Origin'] = activeOrigin;
+
         const response = await cookieAwareAxios.get(targetUrl, {
-            headers: {
-                'User-Agent': ua,
-                'Referer': activeReferer,
-                'Accept': '*/*'
-            },
+            headers: axiosHeaders,
             responseType: 'text',
             timeout: 10000
         });
@@ -373,45 +388,70 @@ app.get('/proxy/m3u8', async (req, res) => {
 
 // 2. Binary Segment Proxy (Handles /proxy/video)
 // Uses http-proxy-middleware for robust high-performance binary piping
-const videoProxy = createProxyMiddleware({
-    router: (req) => {
-        try {
-            const url = req.query.url;
-            // http-proxy-middleware uses the raw Request object, but Express 
-            // has already populated req.query.url in its decoded form! 
-            // Double-decoding here corrupts token segments.
-            return url ? url : null;
-        } catch (e) { return null; }
-    },
-    changeOrigin: true,
-    followRedirects: true,
-    pathRewrite: (path, req) => '', // We only need the target from the router
-    on: {
-        proxyReq: (proxyReq, req, res) => {
-            const referer = req.query.referer || (req.query.url ? req.query.url : 'https://vidsrc.to/');
-            const ua = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
-            
-            proxyReq.setHeader('User-Agent', ua);
-            proxyReq.setHeader('Referer', referer);
-            try { proxyReq.setHeader('Origin', new URL(referer).origin); } catch (_) {}
-            proxyReq.setHeader('Accept', '*/*');
-            proxyReq.setHeader('Sec-Fetch-Dest', 'empty');
-            proxyReq.setHeader('Sec-Fetch-Mode', 'cors');
-            proxyReq.setHeader('Sec-Fetch-Site', 'cross-site');
-        },
-        proxyRes: (proxyRes, req, res) => {
-            // Ensure no caching and permissive CORS for the segment
-            res.setHeader('Access-Control-Allow-Origin', '*');
-            res.setHeader('Cache-Control', 'no-cache');
-        },
-        error: (err, req, res) => {
-            console.error('[Video Proxy Error]', req.query.url, err.message);
-            res.status(502).send('Video Proxy Error: ' + err.message);
+// 2. Binary Segment Proxy (Handles /proxy/video)
+// High-performance streaming proxy with manual header control
+app.get('/proxy/video', async (req, res) => {
+    let targetUrl = '';
+    try {
+        const rawUrl = req.originalUrl || req.url;
+        const match = rawUrl.match(/[?&]url=([^&]+)/);
+        if (match) targetUrl = decodeURIComponent(match[1]);
+        if (!targetUrl && req.query.url) targetUrl = req.query.url;
+    } catch (e) {}
+
+    if (!targetUrl) return res.status(400).send('No URL provided');
+
+    let embeddedReferer = req.query.referer || '';
+    try {
+        const parsedTarget = new URL(targetUrl);
+        const headersParam = parsedTarget.searchParams.get('headers');
+        if (headersParam) {
+            try {
+                const headers = JSON.parse(headersParam);
+                if (headers.referer) embeddedReferer = headers.referer;
+            } catch (e) {}
         }
+        
+        // VidLink / CDN safety: STRIP internal params before requester
+        parsedTarget.searchParams.delete('host');
+        parsedTarget.searchParams.delete('headers');
+        targetUrl = parsedTarget.toString();
+    } catch (e) {}
+
+    const referer = embeddedReferer || targetUrl;
+    const origin = (() => { try { return new URL(referer).origin; } catch(_) { return ''; } })();
+    const ua = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+
+    try {
+        const response = await cookieAwareAxios.get(targetUrl, {
+            headers: {
+                'User-Agent': ua,
+                'Referer': referer,
+                ...(origin && { 'Origin': origin }),
+                'Accept': '*/*',
+                'Connection': 'keep-alive'
+            },
+            responseType: 'stream',
+            timeout: 15000
+        });
+
+        // Copy critical headers from backend to client
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Content-Type', response.headers['content-type'] || 'video/mp2t');
+        if (response.headers['content-length']) res.setHeader('Content-Length', response.headers['content-length']);
+
+        // Stream the response directly to client for zero-latency
+        response.data.pipe(res);
+        
+        response.data.on('error', (err) => {
+            console.error(`[Video Stream Error] ${targetUrl} | ${err.message}`);
+            res.end();
+        });
+    } catch (e) {
+        console.error(`[Video Proxy Error] ${targetUrl} | ${e.message}`);
+        res.status(e.response?.status || 500).send(`Video Proxy Error: ${e.message}`);
     }
 });
-
-app.get('/proxy/video', videoProxy);
 
 // --- GIGA API ENDPOINTS ---
 
