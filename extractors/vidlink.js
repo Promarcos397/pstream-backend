@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { HttpsProxyAgent } from 'https-proxy-agent';
-import { USER_AGENTS } from '../resolver.js';
+import { USER_AGENTS } from '../utils/constants.js';
 
 const API_BASE = 'https://enc-dec.app/api';
 const VIDLINK_BASE = 'https://vidlink.pro/api/b';

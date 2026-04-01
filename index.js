@@ -8,7 +8,8 @@ import fs from 'fs';
 import os from 'os';
 import { createChallenge, verifyChallenge } from './utils/challenge.js';
 import { getProfile, updateProfile, deleteProfile } from './utils/db.js';
-import { resolveStream, USER_AGENTS } from './resolver.js';
+import { resolveStream } from './resolver.js';
+import { USER_AGENTS } from './utils/constants.js';
 import Redis from 'ioredis';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { wrapper as axiosCookieJarWrapper } from 'axios-cookiejar-support';
@@ -393,9 +394,9 @@ app.get('/proxy/m3u8', async (req, res) => {
 });
 
 // 2. Binary Segment Proxy (Handles /proxy/video)
-// Uses http-proxy-middleware for robust high-performance binary piping
-// 2. Binary Segment Proxy (Handles /proxy/video)
-// High-performance streaming proxy with manual header control
+// High-performance streaming proxy with manual header control and Bandwidth-Saving Logic
+const proxyStatusCache = new Map(); // Domain -> usesProxy (boolean)
+
 app.get('/proxy/video', async (req, res) => {
     let targetUrl = '';
     try {
@@ -417,8 +418,6 @@ app.get('/proxy/video', async (req, res) => {
                 if (headers.referer) embeddedReferer = headers.referer;
             } catch (e) {}
         }
-        
-        // VidLink / CDN safety: STRIP internal params before requester
         parsedTarget.searchParams.delete('host');
         parsedTarget.searchParams.delete('headers');
         targetUrl = parsedTarget.toString();
@@ -426,13 +425,20 @@ app.get('/proxy/video', async (req, res) => {
 
     const referer = embeddedReferer || targetUrl;
     const origin = (() => { try { return new URL(referer).origin; } catch(_) { return ''; } })();
+    const domain = new URL(targetUrl).hostname;
 
     const sensitiveDomains = ['storm', 'vodvidl', 'megacloud', 'rabbitstream', 'vizcloud', 'moshcloud'];
     const isSensitive = sensitiveDomains.some(d => targetUrl.includes(d));
-    const ua = USER_AGENTS[0];
+    const ua = getRandomUA();
 
-    try {
-        const response = await cookieAwareAxios.get(targetUrl, {
+    // BANDWIDTH SAVING: Try Direct Fetch first even for sensitive, if not specifically known to fail
+    let useProxy = isSensitive && (proxyAgent !== undefined);
+    
+    // If we've already determined this domain works without proxy, use direct to save 2GB limit
+    if (proxyStatusCache.get(domain) === false) useProxy = false;
+
+    async function attemptFetch(withProxy) {
+        return await cookieAwareAxios.get(targetUrl, {
             headers: {
                 'User-Agent': ua,
                 'Referer': referer,
@@ -440,24 +446,40 @@ app.get('/proxy/video', async (req, res) => {
                 'Accept': '*/*',
                 'Connection': 'keep-alive'
             },
-            httpsAgent: isSensitive ? proxyAgent : undefined, // AUTO-PROXY for segments too
+            httpsAgent: withProxy ? proxyAgent : undefined,
             responseType: 'stream',
-            timeout: isSensitive ? 30000 : 15000,
+            timeout: withProxy ? 20000 : 10000,
             proxy: false
         });
+    }
 
-        // Copy critical headers from backend to client
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        res.setHeader('Content-Type', response.headers['content-type'] || 'video/mp2t');
-        if (response.headers['content-length']) res.setHeader('Content-Length', response.headers['content-length']);
+    try {
+        let response;
+        if (!useProxy) {
+            try {
+                response = await attemptFetch(false);
+                if (isSensitive) proxyStatusCache.set(domain, false);
+            } catch (err) {
+                // FALLBACK: If direct fails for sensitive domain, try proxy
+                if (isSensitive && proxyAgent) {
+                    console.log(`[Proxy] Direct failed for ${domain}, falling back to Residential Proxy...`);
+                    response = await attemptFetch(true);
+                    proxyStatusCache.set(domain, true);
+                } else {
+                    throw err;
+                }
+            }
+        } else {
+            response = await attemptFetch(true);
+        }
 
-        // Stream the response directly to client for zero-latency
-        response.data.pipe(res);
-        
-        response.data.on('error', (err) => {
-            console.error(`[Video Stream Error] ${targetUrl} | ${err.message}`);
-            res.end();
+        // Copy critical HLS/Video headers
+        const headersToCopy = ['content-type', 'content-length', 'accept-ranges', 'content-range', 'cache-control'];
+        headersToCopy.forEach(h => {
+            if (response.headers[h]) res.setHeader(h, response.headers[h]);
         });
+
+        response.data.pipe(res);
     } catch (e) {
         console.error(`[Video Proxy Error] ${targetUrl} | ${e.message}`);
         res.status(e.response?.status || 500).send(`Video Proxy Error: ${e.message}`);
