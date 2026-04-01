@@ -351,27 +351,24 @@ app.get('/proxy/m3u8', async (req, res) => {
         
         const rewritten = text.split('\n').map((line) => {
             const trimmed = line.trim();
-            if (!trimmed || trimmed.startsWith('#')) {
-                // Rewrite URI="..." in any HLS tag that references a sub-resource.
-                // This covers: #EXT-X-KEY, #EXT-X-MAP (segments), #EXT-X-MEDIA (audio/subtitle playlists)
-                if (
-                    trimmed.startsWith('#EXT-X-KEY') ||
-                    trimmed.startsWith('#EXT-X-MAP') ||
-                    trimmed.startsWith('#EXT-X-MEDIA')
-                ) {
-                    return trimmed.replace(/URI="(.*?)"/g, (match, p1) => {
-                        let absoluteUrl = p1;
-                        if (!p1.startsWith('http')) {
-                            try { absoluteUrl = new URL(p1, manifestBaseUrl).href; } catch (e) { return match; }
+            if (trimmed.startsWith('#')) {
+                // Universal Rewriter for URI="..." in any HLS tag (KEY, MAP, MEDIA, SESSION-KEY, etc.)
+                if (trimmed.includes('URI=')) {
+                    return trimmed.replace(/URI=(['"]?)(.*?)\1/g, (match, quote, p2) => {
+                        let absoluteUrl = p2;
+                        if (!p2.startsWith('http')) {
+                            try { absoluteUrl = new URL(p2, manifestBaseUrl).href; } catch (e) { return match; }
                         }
                         const reqHost = req.get('host');
                         const reqProtocol = req.headers['x-forwarded-proto'] || req.protocol;
+                        
                         // Audio/subtitle sub-manifests are .m3u8 playlists → route through /proxy/m3u8
                         // Keys/segments → route through /proxy/video
-                        const isSubManifest = absoluteUrl.includes('.m3u8') || trimmed.startsWith('#EXT-X-MEDIA');
+                        const isSubManifest = absoluteUrl.includes('.m3u8') || absoluteUrl.includes('m3u8');
                         const proxyPath = isSubManifest ? '/proxy/m3u8' : '/proxy/video';
                         const proxyUrl = `${reqProtocol}://${reqHost}${proxyPath}?url=${encodeURIComponent(absoluteUrl)}&referer=${encodeURIComponent(activeReferer)}`;
-                        return `URI="${proxyUrl}"`;
+                        
+                        return `URI=${quote}${proxyUrl}${quote}`;
                     });
                 }
                 return trimmed;
