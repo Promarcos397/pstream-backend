@@ -290,57 +290,35 @@ app.get('/proxy/m3u8', async (req, res) => {
 
     if (!targetUrl) return res.status(400).send('No URL provided');
 
-    // --- Parse embedded headers/host params (VidLink & similar CDNs embed these) ---
-    // e.g. https://cdn.example.com/playlist.m3u8?headers={"referer":"...","origin":"..."}&host=https://...
+    // --- Resolve original base URL for relative link resolution ---
+    let manifestBaseUrl = targetUrl;
     let embeddedReferer = req.query.referer || '';
-    let embeddedOrigin = '';
-    let manifestBaseUrl = targetUrl; // used for resolving relative segments
-
     try {
         const parsedTarget = new URL(targetUrl);
-        const headersParam = parsedTarget.searchParams.get('headers');
         const hostParam = parsedTarget.searchParams.get('host');
-
+        if (hostParam) manifestBaseUrl = hostParam;
+        
+        const headersParam = parsedTarget.searchParams.get('headers');
         if (headersParam) {
-            const embeddedHeaders = JSON.parse(headersParam);
-            if (embeddedHeaders.referer) embeddedReferer = embeddedHeaders.referer;
-            if (embeddedHeaders.origin) embeddedOrigin = embeddedHeaders.origin;
+            const headers = JSON.parse(headersParam);
+            if (headers.referer) embeddedReferer = headers.referer;
         }
-        if (hostParam) {
-            manifestBaseUrl = hostParam;
-        }
-
-        if (headersParam || hostParam) {
-            parsedTarget.searchParams.delete('headers');
-            parsedTarget.searchParams.delete('host');
-            targetUrl = parsedTarget.toString(); // STRIPPED URL FOR CDN FETCH
-        }
-    } catch (e) { /* Ignore if URL has no embedded params */ }
+    } catch (e) {}
 
     const activeReferer = embeddedReferer || targetUrl;
-    const activeOrigin = embeddedOrigin || (() => { try { return new URL(activeReferer).origin; } catch(_) { return ''; } })();
-
+    const reqHost = req.headers.host || req.get('host');
+    const reqProtocol = req.headers['x-forwarded-proto'] || req.protocol;
     const ua = req.headers['x-user-agent'] || USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
-
-    // Full browser fingerprint — Cloudflare WAF checks these headers
-    const headers = {
-        'User-Agent': ua,
-        'Referer': activeReferer,
-        'Accept': '*/*',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Cache-Control': 'no-cache',
-        'Sec-Fetch-Dest': 'empty',
-        'Sec-Fetch-Mode': 'cors',
-        'Sec-Fetch-Site': 'cross-site',
-    };
-    if (activeOrigin) headers['Origin'] = activeOrigin;
 
     try {
         const response = await cookieAwareAxios.get(targetUrl, {
-            headers,
+            headers: {
+                'User-Agent': ua,
+                'Referer': activeReferer,
+                'Accept': '*/*'
+            },
             responseType: 'text',
-            timeout: 8000,
-            maxRedirects: 5
+            timeout: 10000
         });
 
         res.setHeader('Access-Control-Allow-Origin', '*');
@@ -352,23 +330,20 @@ app.get('/proxy/m3u8', async (req, res) => {
         const lines = text.split(/\r?\n/);
         const rewrittenLines = lines.map((line) => {
             const trimmed = line.trim();
-            if (!trimmed) return ''; // Preserve empty lines but keep them clean
+            if (!trimmed) return '';
             
             // 1. Tag Parsing (Lines starting with #)
             if (trimmed.startsWith('#')) {
-                // Universal Rewriter for any attribute that has a URI (KEY, MAP, MEDIA, etc.)
-                // Case-insensitive match for URI=
                 if (/URI=/i.test(trimmed)) {
                     return trimmed.replace(/URI=(['"]?)(.*?)\1/i, (match, quote, p2) => {
                         let absoluteUrl = p2;
-                        if (!p2.startsWith('http')) {
-                            try { absoluteUrl = new URL(p2, manifestBaseUrl).href; } catch (e) { return match; }
-                        }
+                        try {
+                            absoluteUrl = new URL(p2, manifestBaseUrl).href;
+                        } catch (e) { return match; }
                         
-                        const isSubManifest = absoluteUrl.includes('.m3u8') || absoluteUrl.includes('m3u8');
+                        // Treat as manifest if it has manifest/m3u8/playlist in URL
+                        const isSubManifest = /[.\/]m3u8/i.test(absoluteUrl) || /manifest/i.test(absoluteUrl) || /playlist/i.test(absoluteUrl);
                         const proxyPath = isSubManifest ? '/proxy/m3u8' : '/proxy/video';
-                        const reqHost = req.get('host');
-                        const reqProtocol = req.headers['x-forwarded-proto'] || req.protocol;
                         
                         const proxyUrl = `${reqProtocol}://${reqHost}${proxyPath}?url=${encodeURIComponent(absoluteUrl)}&referer=${encodeURIComponent(activeReferer)}`;
                         return `URI=${quote}${proxyUrl}${quote}`;
@@ -379,14 +354,12 @@ app.get('/proxy/m3u8', async (req, res) => {
             
             // 2. Resource Link Parsing (Segments or Playlist URLs)
             let absoluteUrl = trimmed;
-            if (!trimmed.startsWith('http')) {
-                try { absoluteUrl = new URL(trimmed, manifestBaseUrl).href; } catch (e) { return trimmed; }
-            }
+            try {
+                absoluteUrl = new URL(trimmed, manifestBaseUrl).href;
+            } catch (e) { return trimmed; }
             
-            const isPlaylist = absoluteUrl.includes('.m3u8') || absoluteUrl.includes('m3u8');
+            const isPlaylist = /[.\/]m3u8/i.test(absoluteUrl) || /manifest/i.test(absoluteUrl) || /playlist/i.test(absoluteUrl);
             const proxyPath = isPlaylist ? '/proxy/m3u8' : '/proxy/video';
-            const reqHost = req.get('host');
-            const reqProtocol = req.headers['x-forwarded-proto'] || req.protocol;
             
             return `${reqProtocol}://${reqHost}${proxyPath}?url=${encodeURIComponent(absoluteUrl)}&referer=${encodeURIComponent(activeReferer)}`;
         });
@@ -394,8 +367,7 @@ app.get('/proxy/m3u8', async (req, res) => {
         return res.send(rewrittenLines.join('\n'));
     } catch (e) {
         console.error(`[M3U8 Proxy Error] ${targetUrl} | ${e.message}`);
-        const status = e.response?.status || 500;
-        res.status(status).send(`M3U8 Proxy Error (${status}): ${e.message}`);
+        res.status(e.response?.status || 500).send(`M3U8 Proxy Error: ${e.message}`);
     }
 });
 
