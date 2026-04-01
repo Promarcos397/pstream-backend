@@ -270,7 +270,10 @@ app.get('/healthcheck', async (req, res) => {
 app.get('/proxy/m3u8', async (req, res) => {
     let targetUrl = req.query.url;
     if (!targetUrl) return res.status(400).send('No URL provided');
-    targetUrl = decodeURIComponent(targetUrl);
+    
+    // BUG FIX: Express automatically decodes query parameters. 
+    // Double-decoding targetUrl corrupts base64 signature tokens (like %2B -> +) in VidLink URLs!
+    // targetUrl = decodeURIComponent(targetUrl);
 
     // --- Parse embedded headers/host params (VidLink & similar CDNs embed these) ---
     // e.g. https://cdn.example.com/playlist.m3u8?headers={"referer":"...","origin":"..."}&host=https://...
@@ -381,7 +384,10 @@ const videoProxy = createProxyMiddleware({
     router: (req) => {
         try {
             const url = req.query.url;
-            return url ? decodeURIComponent(url) : null;
+            // http-proxy-middleware uses the raw Request object, but Express 
+            // has already populated req.query.url in its decoded form! 
+            // Double-decoding here corrupts token segments.
+            return url ? url : null;
         } catch (e) { return null; }
     },
     changeOrigin: true,
@@ -389,7 +395,7 @@ const videoProxy = createProxyMiddleware({
     pathRewrite: (path, req) => '', // We only need the target from the router
     on: {
         proxyReq: (proxyReq, req, res) => {
-            const referer = req.query.referer || (req.query.url ? decodeURIComponent(req.query.url) : 'https://vidsrc.to/');
+            const referer = req.query.referer || (req.query.url ? req.query.url : 'https://vidsrc.to/');
             const ua = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
             
             proxyReq.setHeader('User-Agent', ua);
