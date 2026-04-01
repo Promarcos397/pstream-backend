@@ -349,32 +349,35 @@ app.get('/proxy/m3u8', async (req, res) => {
         const text = response.data;
         if (!text || typeof text !== 'string') throw new Error('Empty manifest response');
         
-        const rewritten = text.split('\n').map((line) => {
+        const lines = text.split(/\r?\n/);
+        const rewrittenLines = lines.map((line) => {
             const trimmed = line.trim();
+            if (!trimmed) return ''; // Preserve empty lines but keep them clean
+            
+            // 1. Tag Parsing (Lines starting with #)
             if (trimmed.startsWith('#')) {
-                // Universal Rewriter for URI="..." in any HLS tag (KEY, MAP, MEDIA, SESSION-KEY, etc.)
-                if (trimmed.includes('URI=')) {
-                    return trimmed.replace(/URI=(['"]?)(.*?)\1/g, (match, quote, p2) => {
+                // Universal Rewriter for any attribute that has a URI (KEY, MAP, MEDIA, etc.)
+                // Case-insensitive match for URI=
+                if (/URI=/i.test(trimmed)) {
+                    return trimmed.replace(/URI=(['"]?)(.*?)\1/i, (match, quote, p2) => {
                         let absoluteUrl = p2;
                         if (!p2.startsWith('http')) {
                             try { absoluteUrl = new URL(p2, manifestBaseUrl).href; } catch (e) { return match; }
                         }
+                        
+                        const isSubManifest = absoluteUrl.includes('.m3u8') || absoluteUrl.includes('m3u8');
+                        const proxyPath = isSubManifest ? '/proxy/m3u8' : '/proxy/video';
                         const reqHost = req.get('host');
                         const reqProtocol = req.headers['x-forwarded-proto'] || req.protocol;
                         
-                        // Audio/subtitle sub-manifests are .m3u8 playlists → route through /proxy/m3u8
-                        // Keys/segments → route through /proxy/video
-                        const isSubManifest = absoluteUrl.includes('.m3u8') || absoluteUrl.includes('m3u8');
-                        const proxyPath = isSubManifest ? '/proxy/m3u8' : '/proxy/video';
                         const proxyUrl = `${reqProtocol}://${reqHost}${proxyPath}?url=${encodeURIComponent(absoluteUrl)}&referer=${encodeURIComponent(activeReferer)}`;
-                        
                         return `URI=${quote}${proxyUrl}${quote}`;
                     });
                 }
                 return trimmed;
             }
             
-            // Standard segment/playlist URL
+            // 2. Resource Link Parsing (Segments or Playlist URLs)
             let absoluteUrl = trimmed;
             if (!trimmed.startsWith('http')) {
                 try { absoluteUrl = new URL(trimmed, manifestBaseUrl).href; } catch (e) { return trimmed; }
@@ -386,9 +389,9 @@ app.get('/proxy/m3u8', async (req, res) => {
             const reqProtocol = req.headers['x-forwarded-proto'] || req.protocol;
             
             return `${reqProtocol}://${reqHost}${proxyPath}?url=${encodeURIComponent(absoluteUrl)}&referer=${encodeURIComponent(activeReferer)}`;
-        }).join('\n');
+        });
         
-        return res.send(rewritten);
+        return res.send(rewrittenLines.join('\n'));
     } catch (e) {
         console.error(`[M3U8 Proxy Error] ${targetUrl} | ${e.message}`);
         const status = e.response?.status || 500;
