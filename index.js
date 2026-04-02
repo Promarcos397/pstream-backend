@@ -354,7 +354,7 @@ app.get('/proxy/stream', async (req, res) => {
         const urlStr = req.query.url;
         if (!urlStr) return res.status(400).send('No URL provided');
 
-        // 1. Recover and normalize the target URL (Safe Recovery)
+        // 1. Recover and normalize the target URL (Ultra-Safe Recovery)
         let targetUrl = String(urlStr);
         try {
             targetUrl = decodeURIComponent(targetUrl);
@@ -364,27 +364,29 @@ app.get('/proxy/stream', async (req, res) => {
         const isM3U8 = /[.\/]m3u8/i.test(targetUrl) || /manifest/i.test(targetUrl) || /m3u/i.test(targetUrl);
         const fetchHeaders = extractSpoofedHeaders(req, targetUrl, targetUrl);
 
-        let finalFetchUrl = targetUrl;
+        let finalFetchUrl = '';
         let edgeBasePath = '';
 
-        // --- BARE-METAL SNIPER: EDGE BYPASS ---
-        // Find host parameter manually to avoid URL object overhead/crashes
+        // --- IRONCLAD SNIPER: EDGE BYPASS ---
         const hostMatch = targetUrl.match(/[?&]host=([^&]+)/);
         if (hostMatch && targetUrl.includes('storm.vodvidl.site')) {
             const edgeHost = decodeURIComponent(hostMatch[1]);
-            
-            // Extract the path manually: e.g. /proxy/file2/TOKEN/playlist.m3u8 -> /file2/TOKEN/
             const urlWithoutQuery = targetUrl.split('?')[0];
             const pathParts = urlWithoutQuery.split('/');
             const fileName = pathParts.pop();
             const rawPath = pathParts.join('/').replace(/.*\/proxy\//, '/'); 
             
             edgeBasePath = `${edgeHost}${rawPath}/`;
-            finalFetchUrl = `${edgeBasePath}${fileName}`; // Strip search params (unescaped {} fix)
+            finalFetchUrl = `${edgeBasePath}${fileName}`; // Strip raw {} from edge requests
             
             console.log(`[Sniper] Targeting Media Edge: ${edgeHost}`);
         } else {
-            finalFetchUrl = encodeURI(targetUrl);
+            // THE FIX: Use new URL() constructor to auto-escape illegal characters like {} or "
+            try {
+                finalFetchUrl = new URL(targetUrl).href;
+            } catch(e) {
+                finalFetchUrl = encodeURI(targetUrl);
+            }
         }
 
         const response = await cookieAwareAxios.get(finalFetchUrl, {
@@ -395,7 +397,10 @@ app.get('/proxy/stream', async (req, res) => {
         });
 
         if (response.status >= 400) {
-            console.error(`[Sniper Error] ${response.status} from ${new URL(finalFetchUrl).hostname}`);
+            let upstreamHost = 'unknown';
+            try { upstreamHost = new URL(finalFetchUrl).hostname; } catch(e) {}
+            
+            console.error(`[Sniper Error] ${response.status} from ${upstreamHost}`);
             return res.status(response.status).json({ 
                 error: `Upstream Rejected`, 
                 status: response.status, 
@@ -407,12 +412,11 @@ app.get('/proxy/stream', async (req, res) => {
 
     } catch (e) {
         console.error(`[Sniper Fatal] ${e.stack}`);
-        // Return JSON error so the USER can see EXACTLY what happened in the Network tab
         res.status(500).json({
             success: false,
             error: e.message,
             stack: e.stack,
-            message: "Fatal sniper engine exception"
+            hint: "Sniper Engine: Crash during URL normalization or Upstream fetch."
         });
     }
 });
