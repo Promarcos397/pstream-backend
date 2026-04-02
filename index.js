@@ -17,17 +17,25 @@ import { CookieJar } from 'tough-cookie';
 
 dotenv.config();
 
+// PRE-INITIALIZED AGENTS
 const proxyUrl = process.env.RESIDENTIAL_PROXY_URL;
 const proxyAgent = proxyUrl ? new HttpsProxyAgent(proxyUrl) : undefined;
 
-// Persistent cookie jar — stores Cloudflare cf_clearance and other session cookies
-// per CDN domain so "Please enable cookies" challenge stops recurring
+// Browser-like TLS Agent (To bypass Cloudflare Bot Fight Mode)
+const chromeCiphers = 'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384';
+import https from 'https';
+const browserHttpsAgent = new https.Agent({ 
+    ciphers: chromeCiphers, 
+    minVersion: 'TLSv1.2', 
+    honorCipherOrder: true 
+});
+
 const cdnCookieJar = new CookieJar();
 const cookieAwareAxios = axiosCookieJarWrapper(axios.create({
     jar: cdnCookieJar,
     withCredentials: true,
-    // httpsAgent: proxyAgent, // Disabled. Do NOT route heavy video manifests through the residential proxy.
     proxy: false,
+    httpsAgent: browserHttpsAgent
 }));
 
 const app = express();
@@ -343,68 +351,51 @@ function extractSpoofedHeaders(req, targetUrl, defaultReferer) {
 // 1. Unified Full Proxy Route (Proxies EVERYTHING natively with matched IPs)
 app.get('/proxy/stream', async (req, res) => {
     try {
-        if (!req.query.url) return res.status(400).send('No URL provided');
+        const urlStr = req.query.url;
+        if (!urlStr) return res.status(400).send('No URL provided');
 
         // 1. Recover and normalize the target URL
-        let targetUrl = decodeURIComponent(req.query.url);
+        let targetUrl = decodeURIComponent(urlStr);
         targetUrl = targetUrl.replace(/%252F/g, '/').replace(/%2F/gi, '/').replace(/%253D/g, '=').replace(/%3D/gi, '=');
 
         const urlObj = new URL(targetUrl);
         const edgeHost = urlObj.searchParams.get('host');
         const isM3U8 = /[.\/]m3u8/i.test(targetUrl) || /manifest/i.test(targetUrl) || /m3u/i.test(targetUrl);
+        
         const fetchHeaders = extractSpoofedHeaders(req, targetUrl, targetUrl);
 
         let finalFetchUrl = targetUrl;
         let edgeBasePath = '';
 
-        // --- THE ZERO-PROXY EDGE BYPASS ---
-        // If we have an edge host, we can fetch the manifest DIRECTLY from the media server
-        // Media servers almost never have the aggressive WAF that the control domain (storm.vodvidl.site) has.
+        // --- SNIPER: ZERO-PROXY EDGE BYPASS ---
         if (edgeHost && targetUrl.includes('storm.vodvidl.site')) {
             const pathParts = urlObj.pathname.split('/');
-            const fileName = pathParts.pop(); // e.g., playlist.m3u8
+            const fileName = pathParts.pop(); 
             const cleanPath = pathParts.join('/').replace(/^\/proxy/, '');
             
             edgeBasePath = `${edgeHost}${cleanPath}/`;
             finalFetchUrl = `${edgeBasePath}${fileName}${urlObj.search}`;
             
-            console.log(`[Edge Bypass] 🚀 Targeting media server directly: ${finalFetchUrl.substring(0, 80)}...`);
+            console.log(`[Sniper] Targeting Media Edge: ${edgeHost}`);
         }
 
-        // --- CLOUDFLARE BYPASS (TLS SPOOFING) ---
-        // By setting specifically ordered ciphers, we bypass Cloudflare JA3 fingerprinting natively.
-        const chromeCiphers = 'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384';
-        
-        const axiosConfig = {
+        const response = await cookieAwareAxios.get(finalFetchUrl, {
             headers: fetchHeaders,
             responseType: isM3U8 ? 'text' : 'stream',
-            timeout: isM3U8 ? 20000 : 45000,
-            proxy: false, 
-            httpsAgent: new (await import('https')).Agent({ 
-                ciphers: chromeCiphers, 
-                minVersion: 'TLSv1.2', 
-                honorCipherOrder: true 
-            }),
+            timeout: isM3U8 ? 15000 : 45000,
             validateStatus: (s) => s < 500
-        };
-
-        const response = await cookieAwareAxios.get(finalFetchUrl, axiosConfig);
+        });
 
         if (response.status >= 400) {
-            console.error(`[Edge Bypass Failed] ${response.status} from ${new URL(finalFetchUrl).hostname}. Falling back to standard proxy...`);
-            // Fallback: try the original URL with the native IP (it might work if Cloudflare is having a good day)
-            if (finalFetchUrl !== targetUrl) {
-                const fallbackResponse = await cookieAwareAxios.get(targetUrl, axiosConfig);
-                if (fallbackResponse.status < 400) return handleResponse(fallbackResponse, targetUrl, isM3U8, edgeHost, fetchHeaders, res);
-            }
+            console.error(`[Sniper Error] ${response.status} from ${new URL(finalFetchUrl).hostname}`);
             return res.status(response.status).send(`Upstream Rejected: ${response.status}`);
         }
 
         return handleResponse(response, targetUrl, isM3U8, edgeHost, fetchHeaders, res, edgeBasePath);
 
     } catch (e) {
-        console.error(`[Edge Fatal] ${e.stack}`);
-        res.status(500).send(`Edge Proxy Failed: ${e.message}`);
+        console.error(`[Sniper Fatal] ${e.stack}`);
+        res.status(500).send(`Sniper Engine Error: ${e.message}`);
     }
 });
 
