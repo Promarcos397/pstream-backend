@@ -371,11 +371,20 @@ app.get('/proxy/stream', async (req, res) => {
             console.log(`[Edge Bypass] 🚀 Targeting media server directly: ${finalFetchUrl.substring(0, 80)}...`);
         }
 
+        // --- CLOUDFLARE BYPASS (TLS SPOOFING) ---
+        // By setting specifically ordered ciphers, we bypass Cloudflare JA3 fingerprinting natively.
+        const chromeCiphers = 'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384';
+        
         const axiosConfig = {
             headers: fetchHeaders,
             responseType: isM3U8 ? 'text' : 'stream',
-            timeout: isM3U8 ? 15000 : 45000,
-            proxy: false, // 🔥 NO residential proxy needed! Direct to Edge CDN.
+            timeout: isM3U8 ? 20000 : 45000,
+            proxy: false, 
+            httpsAgent: new (await import('https')).Agent({ 
+                ciphers: chromeCiphers, 
+                minVersion: 'TLSv1.2', 
+                honorCipherOrder: true 
+            }),
             validateStatus: (s) => s < 500
         };
 
