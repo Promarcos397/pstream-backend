@@ -345,12 +345,11 @@ app.get('/proxy/stream', async (req, res) => {
     try {
         if (!req.query.url) return res.status(400).send('No URL provided');
 
-        // 1. CRITICAL FIX: Decode the URL before Node.js processes it
-        // This stops the 500 Invalid URL error in axios
+        // 1. Decode and normalize target URL
         let targetUrl = decodeURIComponent(req.query.url);
-
-        // Normalize URL (Special handling for encoded or double-encoded characters)
         targetUrl = targetUrl.replace(/%252F/g, '/').replace(/%2F/gi, '/').replace(/%253D/g, '=').replace(/%3D/gi, '=');
+
+        console.log(`[Sniper] Fetching: ${targetUrl.split('?')[0]}`);
 
         const urlObj = new URL(targetUrl);
         const edgeHost = urlObj.searchParams.get('host');
@@ -358,21 +357,31 @@ app.get('/proxy/stream', async (req, res) => {
         const fetchHeaders = extractSpoofedHeaders(req, targetUrl, targetUrl);
 
         // --- THE SNIPER PROXY ---
-        // 2. Metadata fetch via Residential Proxy
-        const useProxyAgent = isM3U8 && !!proxyAgent;
+        // 2. Safe Agent initialization
+        let agent = undefined;
+        if (isM3U8 && proxyAgent) {
+            agent = proxyAgent;
+            console.log(`[Sniper] Targeting manifest via Residential Proxy...`);
+        }
         
         const axiosConfig = {
             headers: fetchHeaders,
             responseType: isM3U8 ? 'text' : 'stream',
-            timeout: isM3U8 ? 15000 : 35000,
-            httpsAgent: useProxyAgent ? proxyAgent : undefined,
+            timeout: isM3U8 ? 20000 : 45000,
+            httpsAgent: agent,
             validateStatus: (s) => s < 500
         };
 
-        const response = await cookieAwareAxios.get(targetUrl, axiosConfig);
+        let response;
+        try {
+            response = await cookieAwareAxios.get(targetUrl, axiosConfig);
+        } catch (axiosErr) {
+            console.error(`[Sniper Axios Error] ${axiosErr.message}`);
+            return res.status(502).send(`Upstream connection failed: ${axiosErr.message}`);
+        }
 
         if (response.status >= 400) {
-            console.error(`[Sniper Block] ${response.status} from ${urlObj.hostname}`);
+            console.error(`[Sniper Upstream Block] ${response.status} from ${urlObj.hostname}`);
             return res.status(response.status).send(`Upstream Rejected: ${response.status}`);
         }
 
@@ -383,14 +392,16 @@ app.get('/proxy/stream', async (req, res) => {
                 console.log(`[Sniper Mode] 🎯 Bypassing WAF via direct Edge CDN: ${edgeHost}`);
                 
                 const pathParts = urlObj.pathname.split('/');
-                pathParts.pop(); // remove playlist.m3u8
+                pathParts.pop(); 
                 const cleanPath = pathParts.join('/').replace(/^\/proxy/, '');
                 const edgeBasePath = `${edgeHost}${cleanPath}/`;
 
                 rewritten = response.data.split('\n').map(line => {
                     const trimmed = line.trim();
                     if (!trimmed || trimmed.startsWith('#')) return line;
-                    return (trimmed.startsWith('http')) ? line : new URL(trimmed, edgeBasePath).href;
+                    try {
+                        return (trimmed.startsWith('http')) ? line : new URL(trimmed, edgeBasePath).href;
+                    } catch(e) { return line; }
                 }).join('\n');
             } else {
                 // Full corridor mode
@@ -411,8 +422,8 @@ app.get('/proxy/stream', async (req, res) => {
         }
 
     } catch (e) {
-        console.error(`[Sniper Failure] ${e.message}`);
-        res.status(500).send(`Sniper Proxy Failed: ${e.message}`);
+        console.error(`[Sniper Fatal] ${e.stack}`);
+        res.status(500).send(`Sniper Proxy Implementation Error: ${e.message}`);
     }
 });
 
