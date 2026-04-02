@@ -343,10 +343,24 @@ function extractSpoofedHeaders(req, targetUrl, defaultReferer) {
 // 1. Unified Full Proxy Route (Proxies EVERYTHING natively with matched IPs)
 app.get('/proxy/stream', async (req, res) => {
     let targetUrl = req.query.url;
-    if (targetUrl?.includes('%25')) targetUrl = decodeURIComponent(targetUrl);
     if (!targetUrl) return res.status(400).send('No URL provided');
 
+    // FIX 1: The %2F NGINX Trap
+    // Express decodes once, but many providers need literal / for directory routing
+    targetUrl = targetUrl.replace(/%252F/g, '/').replace(/%2F/gi, '/').replace(/%253D/g, '=').replace(/%3D/gi, '=');
+
     try {
+        // FIX 2: Edge CDN Bypass (Bypass storm.vodvidl.site middleman)
+        try {
+            const urlObj = new URL(targetUrl);
+            const hostParam = urlObj.searchParams.get('host');
+            if (hostParam && targetUrl.includes('storm.vodvidl.site')) {
+                const cleanPath = urlObj.pathname.replace(/^\/proxy/, '');
+                targetUrl = `${hostParam}${cleanPath}${urlObj.search}`;
+                console.log(`[Giga Proxy] 🚀 Bypassing proxy for Edge CDN: ${hostParam}`);
+            }
+        } catch (e) {}
+
         const fetchHeaders = extractSpoofedHeaders(req, targetUrl, targetUrl);
         const isM3U8 = /[.\/]m3u8/i.test(targetUrl) || /manifest/i.test(targetUrl) || /m3u/i.test(targetUrl);
         
@@ -354,8 +368,8 @@ app.get('/proxy/stream', async (req, res) => {
         const axiosConfig = {
             headers: fetchHeaders,
             responseType: isM3U8 ? 'text' : 'stream',
-            timeout: isM3U8 ? 10000 : 20000,
-            proxy: false, // NO residential proxy for final delivery to avoid IP mismatch
+            timeout: isM3U8 ? 10000 : 25000,
+            proxy: false, // NO residential proxy (burning bandwidth/IP mismatch)
             validateStatus: (s) => s < 500
         };
 
@@ -370,14 +384,14 @@ app.get('/proxy/stream', async (req, res) => {
         const reqHost = req.get('host');
 
         if (isM3U8) {
-            // Full rewrite (variants + segments) to keep everything inside our CORS-free corridor
+            // Full rewrite (variants + segments) to keep absolute chunks inside the proxy corridor
             const rewritten = rewriteFullProxyManifest(response.data, targetUrl, reqProtocol, reqHost, fetchHeaders.Referer);
             res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
             res.setHeader('Access-Control-Allow-Origin', '*');
             return res.send(rewritten);
         } else {
             // Copy binary data stream
-            const h = ['content-type', 'content-length', 'accept-ranges', 'content-range'];
+            const h = ['content-type', 'content-length', 'accept-ranges', 'content-range', 'cache-control'];
             h.forEach(k => { if (response.headers[k]) res.setHeader(k, response.headers[k]); });
             res.setHeader('Access-Control-Allow-Origin', '*');
             return response.data.pipe(res);
