@@ -9,7 +9,7 @@ import os from 'os';
 import { createChallenge, verifyChallenge } from './utils/challenge.js';
 import { getProfile, updateProfile, deleteProfile } from './utils/db.js';
 import { resolveStreaming } from './resolver.js';
-import { USER_AGENTS } from './utils/constants.js';
+import { USER_AGENTS, getRandomUA } from './utils/constants.js';
 import Redis from 'ioredis';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { wrapper as axiosCookieJarWrapper } from 'axios-cookiejar-support';
@@ -268,147 +268,171 @@ app.get('/healthcheck', async (req, res) => {
 
 // 1. M3U8 Manifest Rewriter (Intercepts /proxy/m3u8)
 // This solves the levelLoadError by preventing HLS.js from making broken relative requests without ?url=
-app.get('/proxy/m3u8', async (req, res) => {
-    // BUG FIX: Express automatically decodes query parameters, which corrupts 
-    // base64 tokens (like %2B -> +) in sensitive stream provider URLs (VidLink, etc).
-    // We manually extract the RAW url parameter from the original request URL.
-    let targetUrl = '';
-    try {
-        const rawUrl = req.originalUrl || req.url;
-        const match = rawUrl.match(/[?&]url=([^&]+)/);
-        if (match) {
-            targetUrl = decodeURIComponent(match[1]);
-            // If the URL was double-encoded (common in our segment rewrites), decode once more
-            if (targetUrl.includes('%')) {
-                const secondTry = decodeURIComponent(targetUrl);
-                // Only keep second decode if it looks like a valid protocol (safe safety check)
-                if (secondTry.startsWith('http')) targetUrl = secondTry;
+function rewriteManifest(text, baseUrl, reqProtocol, reqHost, activeReferer) {
+    const lines = text.split(/\r?\n/);
+    return lines.map((line) => {
+        const trimmed = line.trim();
+        if (!trimmed) return '';
+        
+        if (trimmed.startsWith('#')) {
+            if (/URI=/i.test(trimmed)) {
+                return trimmed.replace(/URI=(['"]?)(.*?)\1/i, (match, quote, p2) => {
+                    let absoluteUrl = p2;
+                    try {
+                        absoluteUrl = new URL(p2, baseUrl).href;
+                    } catch (e) { return match; }
+                    
+                    const isSubManifest = /[.\/]m3u8/i.test(absoluteUrl) || /manifest/i.test(absoluteUrl) || /m3u/i.test(absoluteUrl);
+                    const proxyPath = isSubManifest ? '/proxy/m3u8' : '/proxy/video';
+                    const proxyUrl = `${reqProtocol}://${reqHost}${proxyPath}?url=${encodeURIComponent(absoluteUrl)}&referer=${encodeURIComponent(activeReferer)}`;
+                    return `URI=${quote}${proxyUrl}${quote}`;
+                });
             }
+            return trimmed;
         }
-    } catch (e) {
-        targetUrl = req.query.url; // Fallback to Express default if manual parse fails
-    }
+        
+        let absoluteUrl = trimmed;
+        try {
+            absoluteUrl = new URL(trimmed, baseUrl).href;
+        } catch (e) { return trimmed; }
+        
+        const isPlaylist = /[.\/]m3u8/i.test(absoluteUrl) || /manifest/i.test(absoluteUrl) || /m3u/i.test(absoluteUrl);
+        const proxyPath = isPlaylist ? '/proxy/m3u8' : '/proxy/video';
+        return `${reqProtocol}://${reqHost}${proxyPath}?url=${encodeURIComponent(absoluteUrl)}&referer=${encodeURIComponent(activeReferer)}`;
+    }).join('\n');
+}
 
+app.get('/proxy/m3u8', async (req, res) => {
+    const rawReqUrl = req.originalUrl || req.url;
+    const mainSearchParams = new URL(rawReqUrl, `http://${req.get('host')}`).searchParams;
+    let targetUrl = mainSearchParams.get('url') || '';
+    
+    // Safety check for double encoding (common in some extractors)
+    if (targetUrl.includes('%25')) targetUrl = decodeURIComponent(targetUrl);
+    
     if (!targetUrl) return res.status(400).send('No URL provided');
+
+    // 1. Resolve custom headers from top-level query or nested URL
+    let customHeaders = {};
+    const topLevelHeaders = mainSearchParams.get('headers') || req.query.headers;
+    if (topLevelHeaders) {
+        try {
+            customHeaders = JSON.parse(topLevelHeaders);
+        } catch (e) {
+            console.warn('[Proxy] Failed to parse headers param:', topLevelHeaders);
+        }
+    }
 
     // --- Resolve original base URL for relative link resolution ---
     let manifestBaseUrl = targetUrl;
-    let embeddedReferer = req.query.referer || '';
+    let embeddedReferer = customHeaders.referer || mainSearchParams.get('referer') || req.headers.referer || '';
+    let embeddedOrigin = customHeaders.origin || '';
     
     try {
         const parsedTarget = new URL(targetUrl);
         const hostParam = parsedTarget.searchParams.get('host');
         if (hostParam) manifestBaseUrl = hostParam;
         
-        const headersParam = parsedTarget.searchParams.get('headers');
-        if (headersParam) {
+        // Also check if headers are INSIDE the URL param itself (legacy compatibility)
+        const nestedHeadersParam = parsedTarget.searchParams.get('headers');
+        if (nestedHeadersParam) {
             try {
-                const headers = JSON.parse(headersParam);
-                if (headers.referer) embeddedReferer = headers.referer;
+                const nested = JSON.parse(nestedHeadersParam);
+                if (nested.referer) embeddedReferer = nested.referer;
+                if (nested.origin) embeddedOrigin = nested.origin;
             } catch (e) {}
         }
 
-        // STRIP internal params before requesting the actual CDN
+        // STRIP internal internal Giga-specific params before requesting the actual CDN
         parsedTarget.searchParams.delete('host');
         parsedTarget.searchParams.delete('headers');
         targetUrl = parsedTarget.toString();
-    } catch (e) {}
+        
+        if (!targetUrl.startsWith('http')) {
+            targetUrl = new URL(targetUrl, manifestBaseUrl).href;
+        }
+    } catch (e) {
+        manifestBaseUrl = targetUrl.substring(0, targetUrl.lastIndexOf('/') + 1);
+    }
 
     const activeReferer = embeddedReferer || targetUrl;
-    const activeOrigin = (() => { try { return new URL(activeReferer).origin; } catch(_) { return ''; } })();
+    const activeOrigin = embeddedOrigin || (() => { try { return new URL(activeReferer).origin; } catch(_) { return ''; } })();
     
     const reqHost = req.headers.host || req.get('host');
-    const reqProtocol = req.headers['x-forwarded-proto'] || req.protocol;
+    const reqProtocol = req.headers['x-forwarded-proto'] || 'https'; 
+
     const sensitiveDomains = ['storm', 'vodvidl', 'megacloud', 'rabbitstream', 'vizcloud', 'moshcloud'];
     const isSensitive = sensitiveDomains.some(d => targetUrl.includes(d));
-    
-    // Standardize User-Agent to match Scraper (UA consistency is critical for IP-signed tokens)
-    const ua = req.headers['x-user-agent'] || USER_AGENTS[0];
+    const ua = getRandomUA();
 
     try {
-        const axiosHeaders = {
-            'User-Agent': ua,
-            'Referer': activeReferer,
-            'Accept': '*/*',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Cache-Control': 'no-cache'
-        };
-        if (activeOrigin) axiosHeaders['Origin'] = activeOrigin;
+        async function fetchManifest(withProxy) {
+            return await cookieAwareAxios.get(targetUrl, {
+                headers: {
+                    'User-Agent': ua,
+                    'Referer': activeReferer,
+                    ...(activeOrigin && { 'Origin': activeOrigin }),
+                    'Accept': '*/*',
+                    'Cache-Control': 'no-cache'
+                },
+                httpsAgent: withProxy ? (proxyAgent || undefined) : undefined,
+                responseType: 'text',
+                timeout: withProxy ? 15000 : 10000,
+                validateStatus: (status) => status < 500, // Handle non-500 errors gracefully
+            });
+        }
 
-        const response = await cookieAwareAxios.get(targetUrl, {
-            headers: axiosHeaders,
-            httpsAgent: isSensitive ? proxyAgent : undefined, // AUTO-PROXY for sensitive domains
-            responseType: 'text',
-            timeout: isSensitive ? 15000 : 10000,
-            proxy: false
-        });
+        let response;
+        let usedProxy = false;
 
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-        
+        // Try proxy first ONLY if sensitive and agent exists
+        if (isSensitive && proxyAgent) {
+            try {
+                response = await fetchManifest(true);
+                usedProxy = true;
+                if (response.status >= 400) throw new Error(`Proxy status ${response.status}`);
+            } catch (e) {
+                console.warn(`[M3U8 Proxy] Proxy failed for ${targetUrl}, falling back to direct...`);
+                response = await fetchManifest(false);
+                usedProxy = false;
+            }
+        } else {
+            response = await fetchManifest(false);
+        }
+
+        if (response.status >= 400) {
+            return res.status(response.status).send(`Upstream Error: ${response.status}`);
+        }
+
         const text = response.data;
         if (!text || typeof text !== 'string') throw new Error('Empty manifest response');
         
-        const lines = text.split(/\r?\n/);
-        const rewrittenLines = lines.map((line) => {
-            const trimmed = line.trim();
-            if (!trimmed) return '';
-            
-            // 1. Tag Parsing (Lines starting with #)
-            if (trimmed.startsWith('#')) {
-                if (/URI=/i.test(trimmed)) {
-                    return trimmed.replace(/URI=(['"]?)(.*?)\1/i, (match, quote, p2) => {
-                        let absoluteUrl = p2;
-                        try {
-                            absoluteUrl = new URL(p2, manifestBaseUrl).href;
-                        } catch (e) { return match; }
-                        
-                        // Treat as manifest if it has manifest/m3u8/playlist in URL
-                        const isSubManifest = /[.\/]m3u8/i.test(absoluteUrl) || /manifest/i.test(absoluteUrl) || /playlist/i.test(absoluteUrl);
-                        const proxyPath = isSubManifest ? '/proxy/m3u8' : '/proxy/video';
-                        
-                        const proxyUrl = `${reqProtocol}://${reqHost}${proxyPath}?url=${encodeURIComponent(absoluteUrl)}&referer=${encodeURIComponent(activeReferer)}`;
-                        return `URI=${quote}${proxyUrl}${quote}`;
-                    });
-                }
-                return trimmed;
-            }
-            
-            // 2. Resource Link Parsing (Segments or Playlist URLs)
-            let absoluteUrl = trimmed;
-            try {
-                absoluteUrl = new URL(trimmed, manifestBaseUrl).href;
-            } catch (e) { return trimmed; }
-            
-            const isPlaylist = /[.\/]m3u8/i.test(absoluteUrl) || /manifest/i.test(absoluteUrl) || /playlist/i.test(absoluteUrl);
-            const proxyPath = isPlaylist ? '/proxy/m3u8' : '/proxy/video';
-            
-            return `${reqProtocol}://${reqHost}${proxyPath}?url=${encodeURIComponent(absoluteUrl)}&referer=${encodeURIComponent(activeReferer)}`;
-        });
+        const rewritten = rewriteManifest(text, manifestBaseUrl, reqProtocol, reqHost, activeReferer);
         
-        return res.send(rewrittenLines.join('\n'));
+        res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('X-Proxy-Used', usedProxy ? 'true' : 'false');
+        return res.send(rewritten);
+
     } catch (e) {
         console.error(`[M3U8 Proxy Error] ${targetUrl} | ${e.message}`);
         res.status(e.response?.status || 500).send(`M3U8 Proxy Error: ${e.message}`);
     }
 });
 
+
+const proxyStatusCache = new Map();
+
 // 2. Binary Segment Proxy (Handles /proxy/video)
-// High-performance streaming proxy with manual header control and Bandwidth-Saving Logic
-const proxyStatusCache = new Map(); // Domain -> usesProxy (boolean)
-
 app.get('/proxy/video', async (req, res) => {
-    let targetUrl = '';
-    try {
-        const rawUrl = req.originalUrl || req.url;
-        const match = rawUrl.match(/[?&]url=([^&]+)/);
-        if (match) targetUrl = decodeURIComponent(match[1]);
-        if (!targetUrl && req.query.url) targetUrl = req.query.url;
-    } catch (e) {}
-
+    const rawReqUrl = req.originalUrl || req.url;
+    const mainSearchParams = new URL(rawReqUrl, `http://${req.get('host')}`).searchParams;
+    let targetUrl = mainSearchParams.get('url') || '';
+    
+    if (targetUrl.includes('%25')) targetUrl = decodeURIComponent(targetUrl);
     if (!targetUrl) return res.status(400).send('No URL provided');
 
-    let embeddedReferer = req.query.referer || '';
+    let embeddedReferer = mainSearchParams.get('referer') || '';
     try {
         const parsedTarget = new URL(targetUrl);
         const headersParam = parsedTarget.searchParams.get('headers');
@@ -504,7 +528,7 @@ app.get('/api/stream', async (req, res) => {
         // rewrite its relative/absolute segment URLs to go through our proxy,
         // then embed result as directManifest so the frontend can Blob URL it
         if (streamData?.sources) {
-            const reqProto = req.headers['x-forwarded-proto'] || req.protocol;
+            const reqProto = req.headers['x-forwarded-proto'] || 'https';
             const baseProxyUrl = `${reqProto}://${req.get('host')}`;
 
             streamData.sources = streamData.sources.map(source => {
@@ -513,16 +537,7 @@ app.get('/api/stream', async (req, res) => {
                 const baseUrl = source.manifestBaseUrl || source.url;
                 const referer = source.referer || '';
 
-                const rewritten = source.cachedManifest.split('\n').map(line => {
-                    const t = line.trim();
-                    if (!t || t.startsWith('#')) return t;
-                    let abs = t;
-                    if (!t.startsWith('http')) {
-                        try { abs = new URL(t, baseUrl).href; } catch (_) { return t; }
-                    }
-                    const isM3U8 = abs.includes('.m3u8');
-                    return `${baseProxyUrl}${isM3U8 ? '/proxy/m3u8' : '/proxy/video'}?url=${encodeURIComponent(abs)}&referer=${encodeURIComponent(referer)}`;
-                }).join('\n');
+                const rewritten = rewriteManifest(source.cachedManifest, baseUrl, reqProto, req.get('host'), referer);
 
                 return { ...source, directManifest: rewritten, cachedManifest: undefined };
             });
@@ -530,6 +545,7 @@ app.get('/api/stream', async (req, res) => {
 
         res.json(streamData);
     } catch (e) {
+        console.error(`[API Stream Error] ${e.message}`);
         res.status(500).json({ success: false, error: e.message });
     }
 });
