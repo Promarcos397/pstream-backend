@@ -342,27 +342,29 @@ function extractSpoofedHeaders(req, targetUrl, defaultReferer) {
 
 // 1. Unified Full Proxy Route (Proxies EVERYTHING natively with matched IPs)
 app.get('/proxy/stream', async (req, res) => {
-    let targetUrl = req.query.url;
-    if (!targetUrl) return res.status(400).send('No URL provided');
-
-    // Normalize URL
-    targetUrl = targetUrl.replace(/%252F/g, '/').replace(/%2F/gi, '/').replace(/%253D/g, '=').replace(/%3D/gi, '=');
-
     try {
+        if (!req.query.url) return res.status(400).send('No URL provided');
+
+        // 1. CRITICAL FIX: Decode the URL before Node.js processes it
+        // This stops the 500 Invalid URL error in axios
+        let targetUrl = decodeURIComponent(req.query.url);
+
+        // Normalize URL (Special handling for encoded or double-encoded characters)
+        targetUrl = targetUrl.replace(/%252F/g, '/').replace(/%2F/gi, '/').replace(/%253D/g, '=').replace(/%3D/gi, '=');
+
         const urlObj = new URL(targetUrl);
         const edgeHost = urlObj.searchParams.get('host');
         const isM3U8 = /[.\/]m3u8/i.test(targetUrl) || /manifest/i.test(targetUrl) || /m3u/i.test(targetUrl);
         const fetchHeaders = extractSpoofedHeaders(req, targetUrl, targetUrl);
 
         // --- THE SNIPER PROXY ---
-        // 1. Fetch only the metadata (.m3u8) through the Residential Proxy (IPRoyal)
-        // This bypasses Cloudflare's datacenter blocks for the initial discovery.
+        // 2. Metadata fetch via Residential Proxy
         const useProxyAgent = isM3U8 && !!proxyAgent;
         
         const axiosConfig = {
             headers: fetchHeaders,
             responseType: isM3U8 ? 'text' : 'stream',
-            timeout: isM3U8 ? 12000 : 30000,
+            timeout: isM3U8 ? 15000 : 35000,
             httpsAgent: useProxyAgent ? proxyAgent : undefined,
             validateStatus: (s) => s < 500
         };
@@ -370,20 +372,16 @@ app.get('/proxy/stream', async (req, res) => {
         const response = await cookieAwareAxios.get(targetUrl, axiosConfig);
 
         if (response.status >= 400) {
-            console.error(`[Proxy Sniper Block] ${response.status} from ${urlObj.hostname}`);
+            console.error(`[Sniper Block] ${response.status} from ${urlObj.hostname}`);
             return res.status(response.status).send(`Upstream Rejected: ${response.status}`);
         }
-
-        const reqProtocol = req.headers['x-forwarded-proto'] || 'https';
-        const reqHost = req.get('host');
 
         if (isM3U8) {
             let rewritten;
             if (edgeHost && targetUrl.includes('storm.vodvidl.site')) {
-                // Sniper Mode: Rewrite chunks to point DIRECTLY to the Edge CDN bypass
-                console.log(`[Sniper Proxy] 🎯 Rewriting manifest for direct Edge access: ${edgeHost}`);
+                // 3. SNIPER MODE: Rewrite chunks for direct Edge delivery
+                console.log(`[Sniper Mode] 🎯 Bypassing WAF via direct Edge CDN: ${edgeHost}`);
                 
-                // Calculate direct base path for segments on the Edge side
                 const pathParts = urlObj.pathname.split('/');
                 pathParts.pop(); // remove playlist.m3u8
                 const cleanPath = pathParts.join('/').replace(/^\/proxy/, '');
@@ -392,17 +390,12 @@ app.get('/proxy/stream', async (req, res) => {
                 rewritten = response.data.split('\n').map(line => {
                     const trimmed = line.trim();
                     if (!trimmed || trimmed.startsWith('#')) return line;
-                    
-                    // Convert relative chunks to direct-edge URLs
-                    if (!trimmed.startsWith('http')) {
-                        try {
-                            return new URL(trimmed, edgeBasePath).href;
-                        } catch (e) { return line; }
-                    }
-                    return line;
+                    return (trimmed.startsWith('http')) ? line : new URL(trimmed, edgeBasePath).href;
                 }).join('\n');
             } else {
-                // Full Corridor Mode
+                // Full corridor mode
+                const reqProtocol = req.headers['x-forwarded-proto'] || 'https';
+                const reqHost = req.get('host');
                 rewritten = rewriteFullProxyManifest(response.data, targetUrl, reqProtocol, reqHost, fetchHeaders.Referer);
             }
 
@@ -410,7 +403,7 @@ app.get('/proxy/stream', async (req, res) => {
             res.setHeader('Access-Control-Allow-Origin', '*');
             return res.send(rewritten);
         } else {
-            // Binary data (segments) - streamed natively to browser
+            // Binary stream (segments)
             const h = ['content-type', 'content-length', 'accept-ranges', 'content-range', 'cache-control'];
             h.forEach(k => { if (response.headers[k]) res.setHeader(k, response.headers[k]); });
             res.setHeader('Access-Control-Allow-Origin', '*');
@@ -418,7 +411,7 @@ app.get('/proxy/stream', async (req, res) => {
         }
 
     } catch (e) {
-        console.error(`[Sniper Error] ${e.message}`);
+        console.error(`[Sniper Failure] ${e.message}`);
         res.status(500).send(`Sniper Proxy Failed: ${e.message}`);
     }
 });
