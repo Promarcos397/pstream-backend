@@ -354,12 +354,17 @@ app.get('/proxy/stream', async (req, res) => {
         const urlStr = req.query.url;
         if (!urlStr) return res.status(400).send('No URL provided');
 
-        // 1. Recover and normalize the target URL (Ultra-Safe Recovery)
+        // 1. Recover and normalize the target URL (Deep Safe Recovery)
         let targetUrl = String(urlStr);
-        try {
-            targetUrl = decodeURIComponent(targetUrl);
-            targetUrl = targetUrl.replace(/%252F/g, '/').replace(/%2F/gi, '/').replace(/%253D/g, '=').replace(/%3D/gi, '=');
-        } catch(e) {}
+        while (targetUrl.includes('%')) {
+            try {
+                const decoded = decodeURIComponent(targetUrl);
+                if (decoded === targetUrl) break;
+                targetUrl = decoded;
+            } catch(e) { break; }
+        }
+        // Patch persistent NGINX traps
+        targetUrl = targetUrl.replace(/%252F/g, '/').replace(/%2F/gi, '/').replace(/%253D/g, '=').replace(/%3D/gi, '=');
 
         const isM3U8 = /[.\/]m3u8/i.test(targetUrl) || /manifest/i.test(targetUrl) || /m3u/i.test(targetUrl);
         const fetchHeaders = extractSpoofedHeaders(req, targetUrl, targetUrl);
@@ -367,21 +372,25 @@ app.get('/proxy/stream', async (req, res) => {
         let finalFetchUrl = '';
         let edgeBasePath = '';
 
-        // --- IRONCLAD SNIPER: EDGE BYPASS ---
+        // --- SNIPER: ZERO-PROXY EDGE BYPASS (Regex Edition) ---
+        // We use Regex instead of the URL object to prevent Node-level crashes from raw {} in the search string
         const hostMatch = targetUrl.match(/[?&]host=([^&]+)/);
-        if (hostMatch && targetUrl.includes('storm.vodvidl.site')) {
+        const pathMatch = targetUrl.match(/\/proxy(\/.*?)(\?|$)/); // Matches /proxy/anything up to ? or end
+
+        if (hostMatch && pathMatch && targetUrl.includes('storm.vodvidl.site')) {
             const edgeHost = decodeURIComponent(hostMatch[1]);
-            const urlWithoutQuery = targetUrl.split('?')[0];
-            const pathParts = urlWithoutQuery.split('/');
-            const fileName = pathParts.pop();
-            const rawPath = pathParts.join('/').replace(/.*\/proxy\//, '/'); 
+            const fullPath = pathMatch[1]; 
             
-            edgeBasePath = `${edgeHost}${rawPath}/`;
-            finalFetchUrl = `${edgeBasePath}${fileName}`; // Strip raw {} from edge requests
+            // Create the base path for relative chunks
+            const pathParts = fullPath.split('/');
+            pathParts.pop(); 
+            edgeBasePath = `${edgeHost}${pathParts.join('/')}/`;
             
-            console.log(`[Sniper] Targeting Media Edge: ${edgeHost}`);
+            finalFetchUrl = `${edgeHost}${fullPath}`; // Strip search params entirely for the Edge CDN
+            
+            console.log(`[Sniper] Targeting Media Edge Directly: ${edgeHost}`);
         } else {
-            // THE FIX: Use new URL() constructor to auto-escape illegal characters like {} or "
+            // Safe wrap for standard fetches
             try {
                 finalFetchUrl = new URL(targetUrl).href;
             } catch(e) {
@@ -400,7 +409,7 @@ app.get('/proxy/stream', async (req, res) => {
             let upstreamHost = 'unknown';
             try { upstreamHost = new URL(finalFetchUrl).hostname; } catch(e) {}
             
-            console.error(`[Sniper Error] ${response.status} from ${upstreamHost}`);
+            console.error(`[Sniper Rejection] ${response.status} from ${upstreamHost}`);
             return res.status(response.status).json({ 
                 error: `Upstream Rejected`, 
                 status: response.status, 
@@ -416,7 +425,7 @@ app.get('/proxy/stream', async (req, res) => {
             success: false,
             error: e.message,
             stack: e.stack,
-            hint: "Sniper Engine: Crash during URL normalization or Upstream fetch."
+            message: "Fatal sniper engine exception during URL normalization."
         });
     }
 });
