@@ -374,9 +374,15 @@ app.get('/proxy/stream', async (req, res) => {
             const cleanPath = pathParts.join('/').replace(/^\/proxy/, '');
             
             edgeBasePath = `${edgeHost}${cleanPath}/`;
-            finalFetchUrl = `${edgeBasePath}${fileName}${urlObj.search}`;
+            // 🛡️ CRITICAL FIX: We STRIP the search params (urlObj.search) here!
+            // The Media Edge host (e.g. frostcomet5.pro) doesn't need the JSON headers intended for the proxy site.
+            // This prevents crashes from unescaped {} characters in node-fetch/axios.
+            finalFetchUrl = `${edgeBasePath}${fileName}`;
             
             console.log(`[Sniper] Targeting Media Edge: ${edgeHost}`);
+        } else {
+            // Safe encoding for non-edge URLs
+            finalFetchUrl = encodeURI(targetUrl);
         }
 
         const response = await cookieAwareAxios.get(finalFetchUrl, {
@@ -388,14 +394,20 @@ app.get('/proxy/stream', async (req, res) => {
 
         if (response.status >= 400) {
             console.error(`[Sniper Error] ${response.status} from ${new URL(finalFetchUrl).hostname}`);
-            return res.status(response.status).send(`Upstream Rejected: ${response.status}`);
+            return res.status(response.status).json({ error: `Upstream Rejected`, status: response.status, target: finalFetchUrl.substring(0, 50) });
         }
 
         return handleResponse(response, targetUrl, isM3U8, edgeHost, fetchHeaders, res, edgeBasePath);
 
     } catch (e) {
         console.error(`[Sniper Fatal] ${e.stack}`);
-        res.status(500).send(`Sniper Engine Error: ${e.message}`);
+        // Return JSON error so the USER can see EXACTLY what happened in the Network tab
+        res.status(500).json({
+            success: false,
+            error: e.message,
+            stack: e.stack,
+            hint: "Check if the target URL contains unescaped {} characters."
+        });
     }
 });
 
