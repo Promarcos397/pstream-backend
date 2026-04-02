@@ -11,7 +11,7 @@ const HEADERS = {
 };
 
 const axiosInstance = axios.create({
-    httpsAgent,
+    // Native HF IP alignment
     proxy: false,
     timeout: 7000
 });

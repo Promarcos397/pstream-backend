@@ -70,7 +70,7 @@ export async function scrapeVidLink(tmdbId, type, season, episode) {
 
             const manifestResp = await axios.get(playlistUrl, {
                 headers: fetchHeaders,
-                httpsAgent: proxyAgent, // IMPORTANT: Use residential proxy
+                // REMOVE proxyAgent to align IPs (Scraper IP == Playback Proxy IP on HF)
                 responseType: 'text',
                 timeout: 12000,
                 maxRedirects: 5,

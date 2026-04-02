@@ -26,7 +26,11 @@ import { getRandomUA } from './utils/constants.js';
 const stringAtob = (input) => Buffer.from(input, 'base64').toString('binary');
 const proxyUrl = process.env.RESIDENTIAL_PROXY_URL;
 const httpsAgent = proxyUrl ? new HttpsProxyAgent(proxyUrl) : undefined;
-const scraperAxios = axios.create({ httpsAgent, proxy: false, timeout: 8000 });
+const scraperAxios = axios.create({
+    // Native HF IP alignment for IP-locked providers (like Embed.su)
+    proxy: false,
+    timeout: 8000
+});
 
 async function scrapeEmbedSuDirect(tmdbId, type, season, episode) {
     try {
@@ -73,24 +77,24 @@ export async function resolveStreaming(tmdbId, type, season, episode, title, yea
         () => scrapeVidLink(tmdbId, type, season, episode),
         () => scrapeVsEmbed(tmdbId, type, season, episode),
         () => scrapeVidSrcTo(tmdbId, type, season, episode),
-        () => scrapeEmbedSuDirect(tmdbId, type, season, episode),
         () => scrapeVidSrcMe(tmdbId, type, season, episode),
         () => scrapeVixSrc(tmdbId, type, season, episode),
-        () => scrapeAutoEmbed(tmdbId, type, season, episode),
         () => scrapeVidNest(tmdbId, type, season, episode),
-        () => scrapeVidSrc(tmdbId, type, season, episode), 
+        () => scrapeVidSrc(tmdbId, type, season, episode),
+        () => (title && year) ? scrapeVidZee(title, year, type, season, episode) : null,
+        () => scrapeEmbedSuDirect(tmdbId, type, season, episode),
+        () => scrapeAutoEmbed(tmdbId, type, season, episode),
         () => scrapeUembed(tmdbId, type, season, episode),
         () => scrapeEE3(tmdbId, type, season, episode),
         () => (title && year) ? scrapeLookMovie(title, year, type, season, episode) : null,
         () => (title && year) ? scrapeHDRezka(title, year, type, season, episode) : null,
-        () => (title && year) ? scrapeVidZee(title, year, type, season, episode) : null,
         () => (title && year) ? scrapeZoeChip(title, year, type, season, episode) : null
     ];
 
     const stages = [
-        providers.slice(0, 5), 
-        providers.slice(5, 11),
-        providers.slice(11)
+        providers.slice(0, 8), // Re-ranked top tier (VidLink, VsEmbed, VidSrc, etc.)
+        providers.slice(8, 12),
+        providers.slice(12)
     ];
 
     for (const stage of stages) {

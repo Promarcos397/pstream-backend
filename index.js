@@ -266,11 +266,13 @@ app.get('/healthcheck', async (req, res) => {
 
 // --- GIGA PROXY ---
 
-// 1. Hybrid Manifest Rewriter (Intercepts /proxy/stream)
-// Proxies .m3u8 manifests but releases .ts chunks directly to bypass Datacenter WAF bans.
-function rewriteHybridManifest(text, baseUrl, reqProtocol, reqHost, activeReferer) {
+// 1. Full Proxy Manifest Rewriter (Intercepts /proxy/stream)
+// Proxies BOTH .m3u8 and .ts segments to solve CORS and mask the browser.
+// Uses identical IP as the scraper (native HF) to satisfy VidLink IP-Locking.
+function rewriteFullProxyManifest(text, baseUrl, reqProtocol, reqHost, activeReferer) {
     const lines = text.split(/\r?\n/);
-    const headers = JSON.stringify({ referer: activeReferer, origin: new URL(activeReferer).origin });
+    const origin = (() => { try { return new URL(activeReferer).origin; } catch(_) { return ''; } })();
+    const headers = JSON.stringify({ referer: activeReferer, origin });
     const headersParam = `&headers=${encodeURIComponent(headers)}`;
 
     return lines.map((line) => {
@@ -278,17 +280,15 @@ function rewriteHybridManifest(text, baseUrl, reqProtocol, reqHost, activeRefere
         if (!trimmed) return '';
         
         if (trimmed.startsWith('#')) {
-            // Handle sub-playlists (URI=)
+            // Target sub-playlists in URI= tags
             if (/URI=/i.test(trimmed)) {
                 return trimmed.replace(/URI=(['"]?)(.*?)\1/i, (match, quote, p2) => {
                     let absoluteUrl = p2;
                     try { absoluteUrl = new URL(p2, baseUrl).href; } catch (e) { return match; }
                     
                     const isSubManifest = /[.\/]m3u8/i.test(absoluteUrl) || /manifest/i.test(absoluteUrl) || /m3u/i.test(absoluteUrl);
-                    if (isSubManifest) {
-                        return `URI=${quote}${reqProtocol}://${reqHost}/proxy/stream?url=${encodeURIComponent(absoluteUrl)}${headersParam}${quote}`;
-                    }
-                    return match; // Release binary chunks as-is
+                    const proxyPath = isSubManifest ? '/proxy/stream' : '/proxy/stream'; // Unify
+                    return `URI=${quote}${reqProtocol}://${reqHost}${proxyPath}?url=${encodeURIComponent(absoluteUrl)}${headersParam}${quote}`;
                 });
             }
             return trimmed;
@@ -297,13 +297,8 @@ function rewriteHybridManifest(text, baseUrl, reqProtocol, reqHost, activeRefere
         let absoluteUrl = trimmed;
         try { absoluteUrl = new URL(trimmed, baseUrl).href; } catch (e) { return trimmed; }
         
-        const isPlaylist = /[.\/]m3u8/i.test(absoluteUrl) || /manifest/i.test(absoluteUrl) || /m3u/i.test(absoluteUrl);
-        if (isPlaylist) {
-            return `${reqProtocol}://${reqHost}/proxy/stream?url=${encodeURIComponent(absoluteUrl)}${headersParam}`;
-        }
-        
-        // HYBRID MAGIC: Release video chunks (.ts) directly to the browser's residential IP
-        return absoluteUrl;
+        // Wrap EVERYTHING in our proxy back-channel to avoid CORS and hide the browser Origin
+        return `${reqProtocol}://${reqHost}/proxy/stream?url=${encodeURIComponent(absoluteUrl)}${headersParam}`;
     }).join('\n');
 }
 
@@ -333,14 +328,19 @@ function extractSpoofedHeaders(req, targetUrl, defaultReferer) {
     const origin = customHeaders.origin || (referer ? new URL(referer).origin : '');
 
     return {
-        "User-Agent": getRandomUA(),
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Referer": referer,
         "Origin": origin,
-        "Accept": "*/*"
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "cross-site",
+        "Connection": "keep-alive"
     };
 }
 
-// 1. Unified Hybrid Proxy Route (Proxies M3U8s, releases .ts chunks)
+// 1. Unified Full Proxy Route (Proxies EVERYTHING natively with matched IPs)
 app.get('/proxy/stream', async (req, res) => {
     let targetUrl = req.query.url;
     if (targetUrl?.includes('%25')) targetUrl = decodeURIComponent(targetUrl);
@@ -348,57 +348,50 @@ app.get('/proxy/stream', async (req, res) => {
 
     try {
         const fetchHeaders = extractSpoofedHeaders(req, targetUrl, targetUrl);
-        const isSensitive = ['storm', 'vodvidl', 'megacloud', 'rabbitstream', 'vizcloud', 'moshcloud'].some(d => targetUrl.includes(d));
+        const isM3U8 = /[.\/]m3u8/i.test(targetUrl) || /manifest/i.test(targetUrl) || /m3u/i.test(targetUrl);
+        
+        // 🚀 ALWAYS USE NATIVE HF IP (matching the scraper session in vidlink.js)
+        const axiosConfig = {
+            headers: fetchHeaders,
+            responseType: isM3U8 ? 'text' : 'stream',
+            timeout: isM3U8 ? 10000 : 20000,
+            proxy: false, // NO residential proxy for final delivery to avoid IP mismatch
+            validateStatus: (s) => s < 500
+        };
 
-        async function fetchSource(withProxy) {
-            return await cookieAwareAxios.get(targetUrl, {
-                headers: fetchHeaders,
-                httpsAgent: withProxy ? (proxyAgent || undefined) : undefined,
-                responseType: 'text',
-                timeout: withProxy ? 15000 : 10000,
-                validateStatus: (s) => s < 500
-            });
-        }
-
-        let response;
-        if (isSensitive && proxyAgent) {
-            try {
-                response = await fetchSource(true);
-                if (response.status >= 400) throw new Error();
-            } catch (e) {
-                response = await fetchSource(false);
-            }
-        } else {
-            response = await fetchSource(false);
-        }
+        const response = await cookieAwareAxios.get(targetUrl, axiosConfig);
 
         if (response.status >= 400) {
-            return res.status(response.status).send(`Upstream Block: ${response.status}`);
+            console.error(`[Proxy Block] ${response.status} from ${new URL(targetUrl).hostname}`);
+            return res.status(response.status).send(`Upstream Rejected: ${response.status}`);
         }
 
-        const text = response.data;
         const reqProtocol = req.headers['x-forwarded-proto'] || 'https';
         const reqHost = req.get('host');
-        
-        const rewritten = rewriteHybridManifest(text, targetUrl, reqProtocol, reqHost, fetchHeaders.Referer);
 
-        res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        return res.send(rewritten);
+        if (isM3U8) {
+            // Full rewrite (variants + segments) to keep everything inside our CORS-free corridor
+            const rewritten = rewriteFullProxyManifest(response.data, targetUrl, reqProtocol, reqHost, fetchHeaders.Referer);
+            res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+            res.setHeader('Access-Control-Allow-Origin', '*');
+            return res.send(rewritten);
+        } else {
+            // Copy binary data stream
+            const h = ['content-type', 'content-length', 'accept-ranges', 'content-range'];
+            h.forEach(k => { if (response.headers[k]) res.setHeader(k, response.headers[k]); });
+            res.setHeader('Access-Control-Allow-Origin', '*');
+            return response.data.pipe(res);
+        }
 
     } catch (e) {
-        console.error(`[Hybrid Proxy Error] ${e.message}`);
+        console.error(`[Proxy Error] ${e.message}`);
         res.status(500).send(`Proxy Error: ${e.message}`);
     }
 });
 
 // Legacy routes for temporary backward compatibility
 app.get('/proxy/m3u8', (req, res) => res.redirect(301, `/proxy/stream?${new URL(req.url, 'http://x').search}`));
-app.get('/proxy/video', async (req, res) => {
-    const targetUrl = req.query.url;
-    if (!targetUrl) return res.status(400).send('No URL');
-    res.redirect(302, targetUrl); 
-});
+app.get('/proxy/video', (req, res) => res.redirect(301, `/proxy/stream?${new URL(req.url, 'http://x').search}`));
 
 // --- GIGA API ENDPOINTS ---
 
@@ -427,7 +420,7 @@ app.get('/api/stream', async (req, res) => {
                 const baseUrl = source.manifestBaseUrl || source.url;
                 const referer = source.referer || '';
 
-                const rewritten = rewriteHybridManifest(source.cachedManifest, baseUrl, reqProto, req.get('host'), referer);
+                const rewritten = rewriteFullProxyManifest(source.cachedManifest, baseUrl, reqProto, req.get('host'), referer);
 
                 return { ...source, directManifest: rewritten, cachedManifest: undefined };
             });
