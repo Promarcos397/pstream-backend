@@ -266,12 +266,11 @@ app.get('/healthcheck', async (req, res) => {
 
 // --- GIGA PROXY ---
 
-// 1. M3U8 Manifest Rewriter (Intercepts /proxy/m3u8)
-// This solves the levelLoadError by preventing HLS.js from making broken relative requests without ?url=
-function rewriteManifest(text, baseUrl, reqProtocol, reqHost, activeReferer) {
+// 1. Hybrid Manifest Rewriter (Intercepts /proxy/stream)
+// Proxies .m3u8 manifests but releases .ts chunks directly to bypass Datacenter WAF bans.
+function rewriteHybridManifest(text, baseUrl, reqProtocol, reqHost, activeReferer) {
     const lines = text.split(/\r?\n/);
-    const origin = (() => { try { return new URL(activeReferer).origin; } catch(_) { return ''; } })();
-    const headers = JSON.stringify({ referer: activeReferer, origin });
+    const headers = JSON.stringify({ referer: activeReferer, origin: new URL(activeReferer).origin });
     const headersParam = `&headers=${encodeURIComponent(headers)}`;
 
     return lines.map((line) => {
@@ -279,14 +278,17 @@ function rewriteManifest(text, baseUrl, reqProtocol, reqHost, activeReferer) {
         if (!trimmed) return '';
         
         if (trimmed.startsWith('#')) {
+            // Handle sub-playlists (URI=)
             if (/URI=/i.test(trimmed)) {
                 return trimmed.replace(/URI=(['"]?)(.*?)\1/i, (match, quote, p2) => {
                     let absoluteUrl = p2;
                     try { absoluteUrl = new URL(p2, baseUrl).href; } catch (e) { return match; }
                     
                     const isSubManifest = /[.\/]m3u8/i.test(absoluteUrl) || /manifest/i.test(absoluteUrl) || /m3u/i.test(absoluteUrl);
-                    const proxyPath = isSubManifest ? '/proxy/m3u8' : '/proxy/video';
-                    return `URI=${quote}${reqProtocol}://${reqHost}${proxyPath}?url=${encodeURIComponent(absoluteUrl)}${headersParam}${quote}`;
+                    if (isSubManifest) {
+                        return `URI=${quote}${reqProtocol}://${reqHost}/proxy/stream?url=${encodeURIComponent(absoluteUrl)}${headersParam}${quote}`;
+                    }
+                    return match; // Release binary chunks as-is
                 });
             }
             return trimmed;
@@ -296,217 +298,106 @@ function rewriteManifest(text, baseUrl, reqProtocol, reqHost, activeReferer) {
         try { absoluteUrl = new URL(trimmed, baseUrl).href; } catch (e) { return trimmed; }
         
         const isPlaylist = /[.\/]m3u8/i.test(absoluteUrl) || /manifest/i.test(absoluteUrl) || /m3u/i.test(absoluteUrl);
-        const proxyPath = isPlaylist ? '/proxy/m3u8' : '/proxy/video';
-        return `${reqProtocol}://${reqHost}${proxyPath}?url=${encodeURIComponent(absoluteUrl)}${headersParam}`;
+        if (isPlaylist) {
+            return `${reqProtocol}://${reqHost}/proxy/stream?url=${encodeURIComponent(absoluteUrl)}${headersParam}`;
+        }
+        
+        // HYBRID MAGIC: Release video chunks (.ts) directly to the browser's residential IP
+        return absoluteUrl;
     }).join('\n');
 }
 
-app.get('/proxy/m3u8', async (req, res) => {
+
+// --- GIGA PROXY ---
+
+// Safely parse headers for spoofing
+function extractSpoofedHeaders(req, targetUrl, defaultReferer) {
     const rawReqUrl = req.originalUrl || req.url;
     const mainSearchParams = new URL(rawReqUrl, `http://${req.get('host')}`).searchParams;
-    let targetUrl = mainSearchParams.get('url') || '';
-    
-    // Safety check for double encoding (common in some extractors)
-    if (targetUrl.includes('%25')) targetUrl = decodeURIComponent(targetUrl);
-    
+    let customHeaders = {};
+
+    const headersParam = mainSearchParams.get('headers') || req.query.headers;
+    if (headersParam) {
+        try { customHeaders = JSON.parse(headersParam); } catch (e) {}
+    }
+
+    try {
+        const nested = new URL(targetUrl).searchParams.get('headers');
+        if (nested) {
+            const parsed = JSON.parse(nested);
+            customHeaders = { ...customHeaders, ...parsed };
+        }
+    } catch (e) {}
+
+    const referer = customHeaders.referer || mainSearchParams.get('referer') || defaultReferer;
+    const origin = customHeaders.origin || (referer ? new URL(referer).origin : '');
+
+    return {
+        "User-Agent": getRandomUA(),
+        "Referer": referer,
+        "Origin": origin,
+        "Accept": "*/*"
+    };
+}
+
+// 1. Unified Hybrid Proxy Route (Proxies M3U8s, releases .ts chunks)
+app.get('/proxy/stream', async (req, res) => {
+    let targetUrl = req.query.url;
+    if (targetUrl?.includes('%25')) targetUrl = decodeURIComponent(targetUrl);
     if (!targetUrl) return res.status(400).send('No URL provided');
 
-    // 1. Resolve custom headers from top-level query or nested URL
-    let customHeaders = {};
-    const topLevelHeaders = mainSearchParams.get('headers') || req.query.headers;
-    if (topLevelHeaders) {
-        try {
-            customHeaders = JSON.parse(topLevelHeaders);
-        } catch (e) {
-            console.warn('[Proxy] Failed to parse headers param:', topLevelHeaders);
-        }
-    }
-
-    // --- Resolve original base URL for relative link resolution ---
-    let manifestBaseUrl = targetUrl;
-    let embeddedReferer = customHeaders.referer || mainSearchParams.get('referer') || req.headers.referer || '';
-    let embeddedOrigin = customHeaders.origin || '';
-    
     try {
-        const parsedTarget = new URL(targetUrl);
-        const hostParam = parsedTarget.searchParams.get('host');
-        if (hostParam) manifestBaseUrl = hostParam;
-        
-        // Also check if headers are INSIDE the URL param itself (legacy compatibility)
-        const nestedHeadersParam = parsedTarget.searchParams.get('headers');
-        if (nestedHeadersParam) {
-            try {
-                const nested = JSON.parse(nestedHeadersParam);
-                if (nested.referer) embeddedReferer = nested.referer;
-                if (nested.origin) embeddedOrigin = nested.origin;
-            } catch (e) {}
-        }
+        const fetchHeaders = extractSpoofedHeaders(req, targetUrl, targetUrl);
+        const isSensitive = ['storm', 'vodvidl', 'megacloud', 'rabbitstream', 'vizcloud', 'moshcloud'].some(d => targetUrl.includes(d));
 
-        // STRIP internal internal Giga-specific params before requesting the actual CDN
-        parsedTarget.searchParams.delete('host');
-        parsedTarget.searchParams.delete('headers');
-        targetUrl = parsedTarget.toString();
-        
-        if (!targetUrl.startsWith('http')) {
-            targetUrl = new URL(targetUrl, manifestBaseUrl).href;
-        }
-    } catch (e) {
-        manifestBaseUrl = targetUrl.substring(0, targetUrl.lastIndexOf('/') + 1);
-    }
-
-    const activeReferer = embeddedReferer || targetUrl;
-    const activeOrigin = embeddedOrigin || (() => { try { return new URL(activeReferer).origin; } catch(_) { return ''; } })();
-    
-    const reqHost = req.headers.host || req.get('host');
-    const reqProtocol = req.headers['x-forwarded-proto'] || 'https'; 
-
-    const sensitiveDomains = ['storm', 'vodvidl', 'megacloud', 'rabbitstream', 'vizcloud', 'moshcloud'];
-    const isSensitive = sensitiveDomains.some(d => targetUrl.includes(d));
-    const ua = getRandomUA();
-
-    try {
-        async function fetchManifest(withProxy) {
+        async function fetchSource(withProxy) {
             return await cookieAwareAxios.get(targetUrl, {
-                headers: {
-                    'User-Agent': ua,
-                    'Referer': activeReferer,
-                    ...(activeOrigin && { 'Origin': activeOrigin }),
-                    'Accept': '*/*',
-                    'Cache-Control': 'no-cache'
-                },
+                headers: fetchHeaders,
                 httpsAgent: withProxy ? (proxyAgent || undefined) : undefined,
                 responseType: 'text',
                 timeout: withProxy ? 15000 : 10000,
-                validateStatus: (status) => status < 500, // Handle non-500 errors gracefully
+                validateStatus: (s) => s < 500
             });
         }
 
         let response;
-        let usedProxy = false;
-
-        // Try proxy first ONLY if sensitive and agent exists
         if (isSensitive && proxyAgent) {
             try {
-                response = await fetchManifest(true);
-                usedProxy = true;
-                if (response.status >= 400) throw new Error(`Proxy status ${response.status}`);
+                response = await fetchSource(true);
+                if (response.status >= 400) throw new Error();
             } catch (e) {
-                console.warn(`[M3U8 Proxy] Proxy failed for ${targetUrl}, falling back to direct...`);
-                response = await fetchManifest(false);
-                usedProxy = false;
+                response = await fetchSource(false);
             }
         } else {
-            response = await fetchManifest(false);
+            response = await fetchSource(false);
         }
 
         if (response.status >= 400) {
-            return res.status(response.status).send(`Upstream Error: ${response.status}`);
+            return res.status(response.status).send(`Upstream Block: ${response.status}`);
         }
 
         const text = response.data;
-        if (!text || typeof text !== 'string') throw new Error('Empty manifest response');
+        const reqProtocol = req.headers['x-forwarded-proto'] || 'https';
+        const reqHost = req.get('host');
         
-        const rewritten = rewriteManifest(text, manifestBaseUrl, reqProtocol, reqHost, activeReferer);
-        
+        const rewritten = rewriteHybridManifest(text, targetUrl, reqProtocol, reqHost, fetchHeaders.Referer);
+
         res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
         res.setHeader('Access-Control-Allow-Origin', '*');
-        res.setHeader('X-Proxy-Used', usedProxy ? 'true' : 'false');
         return res.send(rewritten);
 
     } catch (e) {
-        console.error(`[M3U8 Proxy Error] ${targetUrl} | ${e.message}`);
-        res.status(e.response?.status || 500).send(`M3U8 Proxy Error: ${e.message}`);
+        console.error(`[Hybrid Proxy Error] ${e.message}`);
+        res.status(500).send(`Proxy Error: ${e.message}`);
     }
 });
 
-
-const proxyStatusCache = new Map();
-
-// 2. Binary Segment Proxy (Handles /proxy/video)
+// Legacy routes for temporary backward compatibility
+app.get('/proxy/m3u8', (req, res) => res.redirect(301, `/proxy/stream?${new URL(req.url, 'http://x').search}`));
 app.get('/proxy/video', async (req, res) => {
-    const rawReqUrl = req.originalUrl || req.url;
-    const mainSearchParams = new URL(rawReqUrl, `http://${req.get('host')}`).searchParams;
-    let targetUrl = mainSearchParams.get('url') || '';
-    
-    if (targetUrl.includes('%25')) targetUrl = decodeURIComponent(targetUrl);
-    if (!targetUrl) return res.status(400).send('No URL provided');
-
-    let embeddedReferer = mainSearchParams.get('referer') || '';
-    try {
-        const parsedTarget = new URL(targetUrl);
-        const headersParam = parsedTarget.searchParams.get('headers');
-        if (headersParam) {
-            try {
-                const headers = JSON.parse(headersParam);
-                if (headers.referer) embeddedReferer = headers.referer;
-            } catch (e) {}
-        }
-        parsedTarget.searchParams.delete('host');
-        parsedTarget.searchParams.delete('headers');
-        targetUrl = parsedTarget.toString();
-    } catch (e) {}
-
-    const referer = embeddedReferer || targetUrl;
-    const origin = (() => { try { return new URL(referer).origin; } catch(_) { return ''; } })();
-    const domain = new URL(targetUrl).hostname;
-
-    const sensitiveDomains = ['storm', 'vodvidl', 'megacloud', 'rabbitstream', 'vizcloud', 'moshcloud'];
-    const isSensitive = sensitiveDomains.some(d => targetUrl.includes(d));
-    const ua = getRandomUA();
-
-    // BANDWIDTH SAVING: Try Direct Fetch first even for sensitive, if not specifically known to fail
-    let useProxy = isSensitive && (proxyAgent !== undefined);
-    
-    // If we've already determined this domain works without proxy, use direct to save 2GB limit
-    if (proxyStatusCache.get(domain) === false) useProxy = false;
-
-    async function attemptFetch(withProxy) {
-        return await cookieAwareAxios.get(targetUrl, {
-            headers: {
-                'User-Agent': ua,
-                'Referer': referer,
-                ...(origin && { 'Origin': origin }),
-                'Accept': '*/*',
-                'Connection': 'keep-alive'
-            },
-            httpsAgent: withProxy ? proxyAgent : undefined,
-            responseType: 'stream',
-            timeout: withProxy ? 20000 : 10000,
-            proxy: false
-        });
-    }
-
-    try {
-        let response;
-        if (!useProxy) {
-            try {
-                response = await attemptFetch(false);
-                if (isSensitive) proxyStatusCache.set(domain, false);
-            } catch (err) {
-                // FALLBACK: If direct fails for sensitive domain, try proxy
-                if (isSensitive && proxyAgent) {
-                    console.log(`[Proxy] Direct failed for ${domain}, falling back to Residential Proxy...`);
-                    response = await attemptFetch(true);
-                    proxyStatusCache.set(domain, true);
-                } else {
-                    throw err;
-                }
-            }
-        } else {
-            response = await attemptFetch(true);
-        }
-
-        // Copy critical HLS/Video headers
-        const headersToCopy = ['content-type', 'content-length', 'accept-ranges', 'content-range', 'cache-control'];
-        headersToCopy.forEach(h => {
-            if (response.headers[h]) res.setHeader(h, response.headers[h]);
-        });
-
-        response.data.pipe(res);
-    } catch (e) {
-        console.error(`[Video Proxy Error] ${targetUrl} | ${e.message}`);
-        res.status(e.response?.status || 500).send(`Video Proxy Error: ${e.message}`);
-    }
+    const targetUrl = req.query.url;
+    if (!targetUrl) return res.status(400).send('No URL');
+    res.redirect(302, targetUrl); 
 });
 
 // --- GIGA API ENDPOINTS ---
@@ -536,7 +427,7 @@ app.get('/api/stream', async (req, res) => {
                 const baseUrl = source.manifestBaseUrl || source.url;
                 const referer = source.referer || '';
 
-                const rewritten = rewriteManifest(source.cachedManifest, baseUrl, reqProto, req.get('host'), referer);
+                const rewritten = rewriteHybridManifest(source.cachedManifest, baseUrl, reqProto, req.get('host'), referer);
 
                 return { ...source, directManifest: rewritten, cachedManifest: undefined };
             });
