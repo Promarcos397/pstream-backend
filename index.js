@@ -345,87 +345,98 @@ app.get('/proxy/stream', async (req, res) => {
     try {
         if (!req.query.url) return res.status(400).send('No URL provided');
 
-        // 1. Decode and normalize target URL
+        // 1. Recover and normalize the target URL
         let targetUrl = decodeURIComponent(req.query.url);
         targetUrl = targetUrl.replace(/%252F/g, '/').replace(/%2F/gi, '/').replace(/%253D/g, '=').replace(/%3D/gi, '=');
-
-        console.log(`[Sniper] Fetching: ${targetUrl.split('?')[0]}`);
 
         const urlObj = new URL(targetUrl);
         const edgeHost = urlObj.searchParams.get('host');
         const isM3U8 = /[.\/]m3u8/i.test(targetUrl) || /manifest/i.test(targetUrl) || /m3u/i.test(targetUrl);
         const fetchHeaders = extractSpoofedHeaders(req, targetUrl, targetUrl);
 
-        // --- THE SNIPER PROXY ---
-        // 2. Safe Agent initialization
-        let agent = undefined;
-        if (isM3U8 && proxyAgent) {
-            agent = proxyAgent;
-            console.log(`[Sniper] Targeting manifest via Residential Proxy...`);
+        let finalFetchUrl = targetUrl;
+        let edgeBasePath = '';
+
+        // --- THE ZERO-PROXY EDGE BYPASS ---
+        // If we have an edge host, we can fetch the manifest DIRECTLY from the media server
+        // Media servers almost never have the aggressive WAF that the control domain (storm.vodvidl.site) has.
+        if (edgeHost && targetUrl.includes('storm.vodvidl.site')) {
+            const pathParts = urlObj.pathname.split('/');
+            const fileName = pathParts.pop(); // e.g., playlist.m3u8
+            const cleanPath = pathParts.join('/').replace(/^\/proxy/, '');
+            
+            edgeBasePath = `${edgeHost}${cleanPath}/`;
+            finalFetchUrl = `${edgeBasePath}${fileName}${urlObj.search}`;
+            
+            console.log(`[Edge Bypass] 🚀 Targeting media server directly: ${finalFetchUrl.substring(0, 80)}...`);
         }
-        
+
         const axiosConfig = {
             headers: fetchHeaders,
             responseType: isM3U8 ? 'text' : 'stream',
-            timeout: isM3U8 ? 20000 : 45000,
-            httpsAgent: agent,
+            timeout: isM3U8 ? 15000 : 45000,
+            proxy: false, // 🔥 NO residential proxy needed! Direct to Edge CDN.
             validateStatus: (s) => s < 500
         };
 
-        let response;
-        try {
-            response = await cookieAwareAxios.get(targetUrl, axiosConfig);
-        } catch (axiosErr) {
-            console.error(`[Sniper Axios Error] ${axiosErr.message}`);
-            return res.status(502).send(`Upstream connection failed: ${axiosErr.message}`);
-        }
+        const response = await cookieAwareAxios.get(finalFetchUrl, axiosConfig);
 
         if (response.status >= 400) {
-            console.error(`[Sniper Upstream Block] ${response.status} from ${urlObj.hostname}`);
+            console.error(`[Edge Bypass Failed] ${response.status} from ${new URL(finalFetchUrl).hostname}. Falling back to standard proxy...`);
+            // Fallback: try the original URL with the native IP (it might work if Cloudflare is having a good day)
+            if (finalFetchUrl !== targetUrl) {
+                const fallbackResponse = await cookieAwareAxios.get(targetUrl, axiosConfig);
+                if (fallbackResponse.status < 400) return handleResponse(fallbackResponse, targetUrl, isM3U8, edgeHost, fetchHeaders, res);
+            }
             return res.status(response.status).send(`Upstream Rejected: ${response.status}`);
         }
 
-        if (isM3U8) {
-            let rewritten;
-            if (edgeHost && targetUrl.includes('storm.vodvidl.site')) {
-                // 3. SNIPER MODE: Rewrite chunks for direct Edge delivery
-                console.log(`[Sniper Mode] 🎯 Bypassing WAF via direct Edge CDN: ${edgeHost}`);
-                
+        return handleResponse(response, targetUrl, isM3U8, edgeHost, fetchHeaders, res, edgeBasePath);
+
+    } catch (e) {
+        console.error(`[Edge Fatal] ${e.stack}`);
+        res.status(500).send(`Edge Proxy Failed: ${e.message}`);
+    }
+});
+
+// Helper to handle the manifest/segment response logic
+function handleResponse(response, targetUrl, isM3U8, edgeHost, fetchHeaders, res, edgeBasePath = '') {
+    if (isM3U8) {
+        let rewritten;
+        if (edgeHost && (targetUrl.includes('storm.vodvidl.site') || !!edgeBasePath)) {
+            console.log(`[Edge Bypass] 🎯 Rewriting manifest for direct Edge access.`);
+            
+            if (!edgeBasePath) {
+                const urlObj = new URL(targetUrl);
                 const pathParts = urlObj.pathname.split('/');
                 pathParts.pop(); 
                 const cleanPath = pathParts.join('/').replace(/^\/proxy/, '');
-                const edgeBasePath = `${edgeHost}${cleanPath}/`;
-
-                rewritten = response.data.split('\n').map(line => {
-                    const trimmed = line.trim();
-                    if (!trimmed || trimmed.startsWith('#')) return line;
-                    try {
-                        return (trimmed.startsWith('http')) ? line : new URL(trimmed, edgeBasePath).href;
-                    } catch(e) { return line; }
-                }).join('\n');
-            } else {
-                // Full corridor mode
-                const reqProtocol = req.headers['x-forwarded-proto'] || 'https';
-                const reqHost = req.get('host');
-                rewritten = rewriteFullProxyManifest(response.data, targetUrl, reqProtocol, reqHost, fetchHeaders.Referer);
+                edgeBasePath = `${edgeHost}${cleanPath}/`;
             }
 
-            res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-            res.setHeader('Access-Control-Allow-Origin', '*');
-            return res.send(rewritten);
+            rewritten = response.data.split('\n').map(line => {
+                const trimmed = line.trim();
+                if (!trimmed || trimmed.startsWith('#')) return line;
+                try {
+                    return (trimmed.startsWith('http')) ? line : new URL(trimmed, edgeBasePath).href;
+                } catch(e) { return line; }
+            }).join('\n');
         } else {
-            // Binary stream (segments)
-            const h = ['content-type', 'content-length', 'accept-ranges', 'content-range', 'cache-control'];
-            h.forEach(k => { if (response.headers[k]) res.setHeader(k, response.headers[k]); });
-            res.setHeader('Access-Control-Allow-Origin', '*');
-            return response.data.pipe(res);
+            const reqProtocol = res.req.headers['x-forwarded-proto'] || 'https';
+            const reqHost = res.req.get('host');
+            rewritten = rewriteFullProxyManifest(response.data, targetUrl, reqProtocol, reqHost, fetchHeaders.Referer);
         }
 
-    } catch (e) {
-        console.error(`[Sniper Fatal] ${e.stack}`);
-        res.status(500).send(`Sniper Proxy Implementation Error: ${e.message}`);
+        res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        return res.send(rewritten);
+    } else {
+        const h = ['content-type', 'content-length', 'accept-ranges', 'content-range', 'cache-control'];
+        h.forEach(k => { if (response.headers[k]) res.setHeader(k, response.headers[k]); });
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        return response.data.pipe(res);
     }
-});
+}
 
 // Legacy routes for temporary backward compatibility
 app.get('/proxy/m3u8', (req, res) => res.redirect(301, `/proxy/stream?${new URL(req.url, 'http://x').search}`));
