@@ -270,6 +270,10 @@ app.get('/healthcheck', async (req, res) => {
 // This solves the levelLoadError by preventing HLS.js from making broken relative requests without ?url=
 function rewriteManifest(text, baseUrl, reqProtocol, reqHost, activeReferer) {
     const lines = text.split(/\r?\n/);
+    const origin = (() => { try { return new URL(activeReferer).origin; } catch(_) { return ''; } })();
+    const headers = JSON.stringify({ referer: activeReferer, origin });
+    const headersParam = `&headers=${encodeURIComponent(headers)}`;
+
     return lines.map((line) => {
         const trimmed = line.trim();
         if (!trimmed) return '';
@@ -278,27 +282,22 @@ function rewriteManifest(text, baseUrl, reqProtocol, reqHost, activeReferer) {
             if (/URI=/i.test(trimmed)) {
                 return trimmed.replace(/URI=(['"]?)(.*?)\1/i, (match, quote, p2) => {
                     let absoluteUrl = p2;
-                    try {
-                        absoluteUrl = new URL(p2, baseUrl).href;
-                    } catch (e) { return match; }
+                    try { absoluteUrl = new URL(p2, baseUrl).href; } catch (e) { return match; }
                     
                     const isSubManifest = /[.\/]m3u8/i.test(absoluteUrl) || /manifest/i.test(absoluteUrl) || /m3u/i.test(absoluteUrl);
                     const proxyPath = isSubManifest ? '/proxy/m3u8' : '/proxy/video';
-                    const proxyUrl = `${reqProtocol}://${reqHost}${proxyPath}?url=${encodeURIComponent(absoluteUrl)}&referer=${encodeURIComponent(activeReferer)}`;
-                    return `URI=${quote}${proxyUrl}${quote}`;
+                    return `URI=${quote}${reqProtocol}://${reqHost}${proxyPath}?url=${encodeURIComponent(absoluteUrl)}${headersParam}${quote}`;
                 });
             }
             return trimmed;
         }
         
         let absoluteUrl = trimmed;
-        try {
-            absoluteUrl = new URL(trimmed, baseUrl).href;
-        } catch (e) { return trimmed; }
+        try { absoluteUrl = new URL(trimmed, baseUrl).href; } catch (e) { return trimmed; }
         
         const isPlaylist = /[.\/]m3u8/i.test(absoluteUrl) || /manifest/i.test(absoluteUrl) || /m3u/i.test(absoluteUrl);
         const proxyPath = isPlaylist ? '/proxy/m3u8' : '/proxy/video';
-        return `${reqProtocol}://${reqHost}${proxyPath}?url=${encodeURIComponent(absoluteUrl)}&referer=${encodeURIComponent(activeReferer)}`;
+        return `${reqProtocol}://${reqHost}${proxyPath}?url=${encodeURIComponent(absoluteUrl)}${headersParam}`;
     }).join('\n');
 }
 
