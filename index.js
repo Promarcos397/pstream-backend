@@ -11,32 +11,9 @@ import { getProfile, updateProfile, deleteProfile } from './utils/db.js';
 import { resolveStreaming } from './resolver.js';
 import { USER_AGENTS, getRandomUA } from './utils/constants.js';
 import Redis from 'ioredis';
-import { HttpsProxyAgent } from 'https-proxy-agent';
-import { wrapper as axiosCookieJarWrapper } from 'axios-cookiejar-support';
-import { CookieJar } from 'tough-cookie';
-
 dotenv.config();
 
-// PRE-INITIALIZED AGENTS
-const proxyUrl = process.env.RESIDENTIAL_PROXY_URL;
-const proxyAgent = proxyUrl ? new HttpsProxyAgent(proxyUrl) : undefined;
-
-// Browser-like TLS Agent (To bypass Cloudflare Bot Fight Mode)
-const chromeCiphers = 'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384';
-import https from 'https';
-const browserHttpsAgent = new https.Agent({ 
-    ciphers: chromeCiphers, 
-    minVersion: 'TLSv1.2', 
-    honorCipherOrder: true 
-});
-
-const cdnCookieJar = new CookieJar();
-const cookieAwareAxios = axiosCookieJarWrapper(axios.create({
-    jar: cdnCookieJar,
-    withCredentials: true,
-    proxy: false,
-    httpsAgent: browserHttpsAgent
-}));
+import { gigaAxios, browserHttpsAgent } from './utils/http.js';
 
 const app = express();
 const PORT = process.env.PORT || 7860;
@@ -348,13 +325,15 @@ function extractSpoofedHeaders(req, targetUrl, defaultReferer) {
     };
 }
 
+import { gigaAxios, browserHttpsAgent } from './utils/http.js';
+
 // 1. Unified Full Proxy Route (Proxies EVERYTHING natively with matched IPs)
 app.get('/proxy/stream', async (req, res) => {
     try {
         const urlStr = req.query.url;
         if (!urlStr) return res.status(400).send('No URL provided');
 
-        // 1. Recover and normalize the target URL (Deep Safe Recovery)
+        // 1. Deep Recover and Normalize the Target URL
         let targetUrl = String(urlStr);
         while (targetUrl.includes('%')) {
             try {
@@ -363,7 +342,7 @@ app.get('/proxy/stream', async (req, res) => {
                 targetUrl = decoded;
             } catch(e) { break; }
         }
-        // Patch persistent NGINX traps
+        // Patch persistent NGINX double-encoding traps
         targetUrl = targetUrl.replace(/%252F/g, '/').replace(/%2F/gi, '/').replace(/%253D/g, '=').replace(/%3D/gi, '=');
 
         const isM3U8 = /[.\/]m3u8/i.test(targetUrl) || /manifest/i.test(targetUrl) || /m3u/i.test(targetUrl);
@@ -372,25 +351,31 @@ app.get('/proxy/stream', async (req, res) => {
         let finalFetchUrl = '';
         let edgeBasePath = '';
 
-        // --- SNIPER: ZERO-PROXY EDGE BYPASS (Regex Edition) ---
-        // We use Regex instead of the URL object to prevent Node-level crashes from raw {} in the search string
-        const hostMatch = targetUrl.match(/[?&]host=([^&]+)/);
-        const pathMatch = targetUrl.match(/\/proxy(\/.*?)(\?|$)/); // Matches /proxy/anything up to ? or end
-
-        if (hostMatch && pathMatch && targetUrl.includes('storm.vodvidl.site')) {
-            const edgeHost = decodeURIComponent(hostMatch[1]);
-            const fullPath = pathMatch[1]; 
+        // --- SNIPER: ZERO-PROXY EDGE BYPASS (Improved Selective Parsing) ---
+        const hostParam = targetUrl.match(/[?&]host=([^&]+)/);
+        if (hostParam && targetUrl.includes('storm.vodvidl.site')) {
+            const edgeHost = decodeURIComponent(hostParam[1]);
             
-            // Create the base path for relative chunks
-            const pathParts = fullPath.split('/');
+            // Capture full path including query params (important for IP-signed tokens!)
+            // We only want to strip our own helper params (host and headers)
+            let rawPath = targetUrl.split('?')[0].replace(/.*\/proxy\//, '/'); 
+            let queryParams = targetUrl.split('?')[1] || '';
+            
+            // Clean out the 'host=' and 'headers=' from the query string
+            queryParams = queryParams.split('&')
+                .filter(p => !p.startsWith('host=') && !p.startsWith('headers='))
+                .join('&');
+            
+            finalFetchUrl = `${edgeHost}${rawPath}${queryParams ? `?${queryParams}` : ''}`;
+            
+            // Create the base path for relative fragments
+            const pathParts = rawPath.split('/');
             pathParts.pop(); 
             edgeBasePath = `${edgeHost}${pathParts.join('/')}/`;
             
-            finalFetchUrl = `${edgeHost}${fullPath}`; // Strip search params entirely for the Edge CDN
-            
             console.log(`[Sniper] Targeting Media Edge Directly: ${edgeHost}`);
         } else {
-            // Safe wrap for standard fetches
+            // Standard fetch safely encoded
             try {
                 finalFetchUrl = new URL(targetUrl).href;
             } catch(e) {
@@ -398,7 +383,7 @@ app.get('/proxy/stream', async (req, res) => {
             }
         }
 
-        const response = await cookieAwareAxios.get(finalFetchUrl, {
+        const response = await gigaAxios.get(finalFetchUrl, {
             headers: fetchHeaders,
             responseType: isM3U8 ? 'text' : 'stream',
             timeout: isM3U8 ? 15000 : 45000,
@@ -409,7 +394,7 @@ app.get('/proxy/stream', async (req, res) => {
             let upstreamHost = 'unknown';
             try { upstreamHost = new URL(finalFetchUrl).hostname; } catch(e) {}
             
-            console.error(`[Sniper Rejection] ${response.status} from ${upstreamHost}`);
+            console.error(`[Sniper Rejected] ${response.status} from ${upstreamHost}`);
             return res.status(response.status).json({ 
                 error: `Upstream Rejected`, 
                 status: response.status, 
@@ -417,6 +402,7 @@ app.get('/proxy/stream', async (req, res) => {
             });
         }
 
+        const hostMatch = targetUrl.match(/[?&]host=([^&]+)/);
         return handleResponse(response, targetUrl, isM3U8, (hostMatch ? decodeURIComponent(hostMatch[1]) : null), fetchHeaders, res, edgeBasePath);
 
     } catch (e) {

@@ -1,14 +1,10 @@
-import axios from 'axios';
-import { HttpsProxyAgent } from 'https-proxy-agent';
+import { gigaAxios } from '../utils/http.js';
 import { USER_AGENTS } from '../utils/constants.js';
 
 const API_BASE = 'https://enc-dec.app/api';
 const VIDLINK_BASE = 'https://vidlink.pro/api/b';
 
-const proxyUrl = process.env.RESIDENTIAL_PROXY_URL;
-const proxyAgent = proxyUrl ? new HttpsProxyAgent(proxyUrl) : undefined;
-
-const UA = USER_AGENTS[0]; // Standardize on one for token consistency
+const UA = USER_AGENTS[0]; 
 
 const headers = {
   'User-Agent': UA,
@@ -19,7 +15,7 @@ const headers = {
 
 async function encryptTmdbId(tmdbId) {
     try {
-        const { data } = await axios.get(`${API_BASE}/enc-vidlink`, {
+        const { data } = await gigaAxios.get(`${API_BASE}/enc-vidlink`, {
             params: { text: tmdbId },
             timeout: 5000
         });
@@ -38,7 +34,7 @@ export async function scrapeVidLink(tmdbId, type, season, episode) {
             ? `${VIDLINK_BASE}/movie/${encryptedId}`
             : `${VIDLINK_BASE}/tv/${encryptedId}/${season}/${episode}`;
 
-        const { data: vidlinkData } = await axios.get(apiUrl, { headers, timeout: 5000 });
+        const { data: vidlinkData } = await gigaAxios.get(apiUrl, { headers, timeout: 5000 });
         
         if (!vidlinkData?.stream) return null;
 
@@ -68,7 +64,7 @@ export async function scrapeVidLink(tmdbId, type, season, episode) {
             const hostParam = parsedUrl.searchParams.get('host');
             if (hostParam) manifestBaseUrl = hostParam;
 
-            const manifestResp = await axios.get(playlistUrl, {
+            const manifestResp = await gigaAxios.get(playlistUrl, {
                 headers: fetchHeaders,
                 // REMOVE proxyAgent to align IPs (Scraper IP == Playback Proxy IP on HF)
                 responseType: 'text',

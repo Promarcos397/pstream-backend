@@ -2,40 +2,24 @@
  * P-Stream Giga Engine Resolver v8.1.0
  * "Direct Only — No Embeds"
  */
-import axios from 'axios';
-import { HttpsProxyAgent } from 'https-proxy-agent';
+import { gigaAxios, stringAtob } from './utils/http.js';
+import { getRandomUA } from './utils/constants.js';
 
 // --- Extractors ---
 import { scrapeVidLink } from './extractors/vidlink.js';
-import { scrapeEE3 } from './extractors/ee3.js';
 import { scrapeAutoEmbed } from './extractors/autoembed.js';
 import { scrapeVidSrcTo } from './extractors/vidsrcto.js';
 import { scrapeVidSrcMe } from './extractors/vidsrcme.js';
 import { scrapeVidSrc } from './extractors/vidsrcru.js';
 import { scrapeVidNest } from './extractors/vidnest.js';
 import { scrapeLookMovie } from './extractors/lookmovie.js';
-import { scrapeHDRezka } from './extractors/hdrezka.js';
-import { scrapeZoeChip } from './extractors/zoechip.js';
 import { scrapeVidZee } from './extractors/vidzee.js';
 import { scrapeVixSrc } from './extractors/vixsrc.js';
-import { scrapeUembed } from './extractors/uembed.js';
-import { scrapeVsEmbed } from './extractors/vsembed.js';
-
-import { getRandomUA } from './utils/constants.js';
-
-const stringAtob = (input) => Buffer.from(input, 'base64').toString('binary');
-const proxyUrl = process.env.RESIDENTIAL_PROXY_URL;
-const httpsAgent = proxyUrl ? new HttpsProxyAgent(proxyUrl) : undefined;
-const scraperAxios = axios.create({
-    // Native HF IP alignment for IP-locked providers (like Embed.su)
-    proxy: false,
-    timeout: 8000
-});
 
 async function scrapeEmbedSuDirect(tmdbId, type, season, episode) {
     try {
         const url = `https://embed.su/embed/${type}/${tmdbId}${type === 'tv' ? `/${season}/${episode}` : ''}`;
-        const { data: page } = await scraperAxios.get(url, {
+        const { data: page } = await gigaAxios.get(url, {
             headers: { 'User-Agent': getRandomUA(), Referer: 'https://embed.su' }
         });
         const vConfigMatch = page.match(/window\.vConfig\s*=\s*JSON\.parse\(atob\(`([^`]+)/i);
@@ -51,7 +35,7 @@ async function scrapeEmbedSuDirect(tmdbId, type, season, episode) {
         const resolved = [];
         for (const s of second.slice(0, 3)) {
             try {
-                const { data: streamData } = await scraperAxios.get(`https://embed.su/api/e/${s.hash}`, {
+                const { data: streamData } = await gigaAxios.get(`https://embed.su/api/e/${s.hash}`, {
                     headers: { Referer: 'https://embed.su/', 'User-Agent': getRandomUA() },
                     timeout: 5000
                 });
@@ -75,7 +59,6 @@ export async function resolveStreaming(tmdbId, type, season, episode, title, yea
 
     const providers = [
         () => scrapeVidLink(tmdbId, type, season, episode),
-        () => scrapeVsEmbed(tmdbId, type, season, episode),
         () => scrapeVidSrcTo(tmdbId, type, season, episode),
         () => scrapeVidSrcMe(tmdbId, type, season, episode),
         () => scrapeVixSrc(tmdbId, type, season, episode),
@@ -84,17 +67,12 @@ export async function resolveStreaming(tmdbId, type, season, episode, title, yea
         () => (title && year) ? scrapeVidZee(title, year, type, season, episode) : null,
         () => scrapeEmbedSuDirect(tmdbId, type, season, episode),
         () => scrapeAutoEmbed(tmdbId, type, season, episode),
-        () => scrapeUembed(tmdbId, type, season, episode),
-        () => scrapeEE3(tmdbId, type, season, episode),
-        () => (title && year) ? scrapeLookMovie(title, year, type, season, episode) : null,
-        () => (title && year) ? scrapeHDRezka(title, year, type, season, episode) : null,
-        () => (title && year) ? scrapeZoeChip(title, year, type, season, episode) : null
+        () => (title && year) ? scrapeLookMovie(title, year, type, season, episode) : null
     ];
 
     const stages = [
-        providers.slice(0, 8), // Re-ranked top tier (VidLink, VsEmbed, VidSrc, etc.)
-        providers.slice(8, 12),
-        providers.slice(12)
+        providers.slice(0, 7), // Re-ranked top tier (VidLink, VidSrc, etc.)
+        providers.slice(7)
     ];
 
     for (const stage of stages) {
