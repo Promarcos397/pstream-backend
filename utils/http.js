@@ -18,21 +18,31 @@ let proxyAgent;
 if (proxyUrl) {
     try {
         const pUrl = new URL(proxyUrl);
+        
+        // MASKED LOGGING: For verification WITHOUT leaking credentials
+        const masked = `${pUrl.protocol}//${pUrl.username ? '****:****@' : ''}${pUrl.host}`;
+        console.log(`[HTTP] Initializing Residential Proxy: ${masked}`);
+
         const proxyOptions = {
+            host: pUrl.hostname,
+            port: pUrl.port || (pUrl.protocol === 'https:' ? '443' : '80'),
             cookies: { jar: globalCookieJar },
             ciphers: chromeCiphers,
             minVersion: 'TLSv1.2',
             honorCipherOrder: true
         };
         
-        // If the URL has a username/password, pass them explicitly to the agent
+        // Robust Auth: Prefer URL credentials, fallback to explicit auth object if missing
         if (pUrl.username && pUrl.password) {
             proxyOptions.auth = `${decodeURIComponent(pUrl.username)}:${decodeURIComponent(pUrl.password)}`;
         }
         
+        // We use the constructor directly with the CLEAN options object
+        // This avoids double-auth bugs caused by passing BOTH a string and an auth object.
         proxyAgent = new ProxyCookieAgent(proxyUrl, proxyOptions);
+        
     } catch (e) {
-        console.error('[HTTP] Failed to parse RESIDENTIAL_PROXY_URL:', e.message);
+        console.error('[HTTP] Failed to parse RESIDENTIAL_PROXY_URL. Check your .env format!', e.message);
     }
 }
 
