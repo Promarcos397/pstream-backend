@@ -73,5 +73,31 @@ export const proxyAxios = axios.create({
     timeout: 15000
 });
 
+// RESILIENCE LAYER: Automatic Proxy-to-Direct Failover
+// If the residential proxy account dies (407) or is throttled (429/503),
+// we fall back to the Hugging Face server IP (browserHttpsAgent) to keep the app alive.
+proxyAxios.interceptors.response.use(
+    response => response,
+    async error => {
+        const config = error.config;
+        // Don't retry if we've already retried or it's not a proxy-related error
+        if (!config || config._isRetry || !proxyAgent) {
+            return Promise.reject(error);
+        }
+
+        const status = error.response?.status;
+        // 407 = Auth failure, 429 = Throttled, 503 = Proxy Overloaded
+        if (status === 407 || status === 429 || status === 503 || error.message.includes('Proxy-Authorization')) {
+            console.warn(`[HTTP] Proxy Failure (${status || error.message}). Falling back to Direct IP...`);
+            config._isRetry = true;
+            config.httpsAgent = browserHttpsAgent; // Switch to direct agent
+            config.proxy = false;
+            return axios(config); // Retry with standard axios logic using the new agent
+        }
+
+        return Promise.reject(error);
+    }
+);
+
 export const stringAtob = (input) => Buffer.from(input, 'base64').toString('binary');
 export const stringBtoa = (input) => Buffer.from(input, 'binary').toString('base64');
