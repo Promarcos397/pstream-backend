@@ -325,7 +325,7 @@ function extractSpoofedHeaders(req, targetUrl, defaultReferer) {
     };
 }
 
-import { gigaAxios, browserHttpsAgent } from './utils/http.js';
+
 
 // 1. Unified Full Proxy Route (Proxies EVERYTHING natively with matched IPs)
 app.get('/proxy/stream', async (req, res) => {
