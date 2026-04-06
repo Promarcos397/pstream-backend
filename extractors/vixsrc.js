@@ -1,4 +1,4 @@
-import { gigaAxios } from '../utils/http.js';
+import { proxyAxios } from '../utils/http.js';
 
 /**
  * VixSrc Extractor (Ported from CinePro)
@@ -19,7 +19,7 @@ export async function scrapeVixSrc(tmdbId, type, s, e) {
             : `${baseUrl}/tv/${tmdbId}/${s}/${e}`;
 
         console.log(`[VixSrc] Fetching: ${pageUrl}`);
-        const response = await gigaAxios.get(pageUrl, { headers, timeout: 8000 });
+        const response = await proxyAxios.get(pageUrl, { headers, timeout: 8000 });
         const html = response.data;
 
         // Extraction logic from CinePro patterns

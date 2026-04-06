@@ -1,4 +1,4 @@
-import axios from 'axios';
+import { proxyAxios } from './http.js';
 
 const KEY_HUB_URL = 'https://vidsrc.icu/api/keys'; 
 // Alternative: https://keys.fsh.sh/keys (Currently Dead)
@@ -14,7 +14,7 @@ export async function getLatestKeys() {
     }
 
     try {
-        const { data } = await axios.get(KEY_HUB_URL, { timeout: 5000 });
+        const { data } = await proxyAxios.get(KEY_HUB_URL, { timeout: 15000 });
         if (data) {
             cachedKeys = data;
             lastFetch = now;

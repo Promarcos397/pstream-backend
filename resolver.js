@@ -2,7 +2,7 @@
  * P-Stream Giga Engine Resolver v8.1.0
  * "Direct Only — No Embeds"
  */
-import { gigaAxios, stringAtob } from './utils/http.js';
+import { proxyAxios, stringAtob } from './utils/http.js';
 import { getRandomUA } from './utils/constants.js';
 
 // --- Extractors ---
@@ -19,7 +19,7 @@ import { scrapeVixSrc } from './extractors/vixsrc.js';
 async function scrapeEmbedSuDirect(tmdbId, type, season, episode) {
     try {
         const url = `https://embed.su/embed/${type}/${tmdbId}${type === 'tv' ? `/${season}/${episode}` : ''}`;
-        const { data: page } = await gigaAxios.get(url, {
+        const { data: page } = await proxyAxios.get(url, {
             headers: { 'User-Agent': getRandomUA(), Referer: 'https://embed.su' }
         });
         const vConfigMatch = page.match(/window\.vConfig\s*=\s*JSON\.parse\(atob\(`([^`]+)/i);
@@ -35,7 +35,7 @@ async function scrapeEmbedSuDirect(tmdbId, type, season, episode) {
         const resolved = [];
         for (const s of second.slice(0, 3)) {
             try {
-                const { data: streamData } = await gigaAxios.get(`https://embed.su/api/e/${s.hash}`, {
+                const { data: streamData } = await proxyAxios.get(`https://embed.su/api/e/${s.hash}`, {
                     headers: { Referer: 'https://embed.su/', 'User-Agent': getRandomUA() },
                     timeout: 5000
                 });

@@ -13,7 +13,7 @@ import { USER_AGENTS, getRandomUA } from './utils/constants.js';
 import Redis from 'ioredis';
 dotenv.config();
 
-import { gigaAxios, browserHttpsAgent } from './utils/http.js';
+import { gigaAxios, proxyAxios, browserHttpsAgent } from './utils/http.js';
 
 const app = express();
 const PORT = process.env.PORT || 7860;
@@ -383,7 +383,7 @@ app.get('/proxy/stream', async (req, res) => {
             }
         }
 
-        const response = await gigaAxios.get(finalFetchUrl, {
+        const response = await proxyAxios.get(finalFetchUrl, {
             headers: fetchHeaders,
             responseType: isM3U8 ? 'text' : 'stream',
             timeout: isM3U8 ? 15000 : 45000,

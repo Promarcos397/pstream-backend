@@ -5,7 +5,7 @@
  * This version supports dynamic key fetching (RC4) for VidPlay 
  * and direct M3U8 extraction.
  */
-import { gigaAxios } from '../utils/http.js';
+import { proxyAxios } from '../utils/http.js';
 import * as cheerio from 'cheerio';
 import { getLatestKeys, rc4Decrypt } from '../utils/keyService.js';
 import { USER_AGENTS } from '../utils/constants.js';
@@ -30,20 +30,20 @@ export async function scrapeVidSrcTo(tmdbId, type, season, episode) {
         const headers = { 'User-Agent': UA, Referer: `${vidSrcToBase}/` };
 
         // Step 1: Get data-id from main page
-        const { data: mainPage } = await gigaAxios.get(`${vidSrcToBase}${embedPath}`, { headers, timeout: 8000 });
+        const { data: mainPage } = await proxyAxios.get(`${vidSrcToBase}${embedPath}`, { headers, timeout: 8000 });
         const $ = cheerio.load(mainPage);
         const dataId = $('a[data-id]').attr('data-id');
         if (!dataId) return null;
 
         // Step 2: Get and Decrypt sources
-        const { data: sourcesResp } = await gigaAxios.get(`${vidSrcToBase}/ajax/embed/episode/${dataId}/sources`, { headers });
+        const { data: sourcesResp } = await proxyAxios.get(`${vidSrcToBase}/ajax/embed/episode/${dataId}/sources`, { headers });
         if (sourcesResp.status !== 200 || !sourcesResp.result?.length) return null;
 
         let selectedSource = null;
         for (const source of sourcesResp.result) {
             // Prioritize VidPlay/Vidstream (best direct streams)
             if (source.title === 'Vidplay' || source.title === 'Vidstream') {
-                const { data: sData } = await gigaAxios.get(`${vidSrcToBase}/ajax/embed/source/${source.id}`, { headers });
+                const { data: sData } = await proxyAxios.get(`${vidSrcToBase}/ajax/embed/source/${source.id}`, { headers });
                 const encoded = decodeBase64UrlSafe(sData.result?.url);
                 const decrypted = rc4Decrypt(keys.vidsrc_to || 'WXrUARXb1aDLaZjI', encoded);
                 selectedSource = { name: source.title, url: decodeURIComponent(decodeURIComponent(decrypted)) };
@@ -59,7 +59,7 @@ export async function scrapeVidSrcTo(tmdbId, type, season, episode) {
         const playerHeaders = { 'User-Agent': UA, Referer: vidSrcToBase };
 
         // Fetch futoken for handshake (simulating browser-side token generation)
-        const { data: futokenScript } = await gigaAxios.get(`${playerHost}/futoken`, { headers: playerHeaders });
+        const { data: futokenScript } = await proxyAxios.get(`${playerHost}/futoken`, { headers: playerHeaders });
         const futokenBase = futokenScript.match(/var\s+futoken\s*=\s*'([^']+)'/)?.[1];
         if (!futokenBase) return null;
 
@@ -67,7 +67,7 @@ export async function scrapeVidSrcTo(tmdbId, type, season, episode) {
         const vidId = vidplayUrl.split('/').pop().split('?')[0];
         const mediaUrl = `${playerHost}/mediainfo/${vidId}${new URL(vidplayUrl).search}&futoken=${futokenBase}`;
         
-        const { data: mediaInfo } = await gigaAxios.get(mediaUrl, { 
+        const { data: mediaInfo } = await proxyAxios.get(mediaUrl, { 
             headers: { ...playerHeaders, Referer: vidplayUrl },
             timeout: 8000
         });
