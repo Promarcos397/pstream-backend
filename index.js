@@ -383,7 +383,13 @@ app.get('/proxy/stream', async (req, res) => {
             }
         }
 
-        const response = await proxyAxios.get(finalFetchUrl, {
+        // BANDWIDTH OPTIMIZATION: 
+        // Residential proxies usually charge per GB. A single movie = ~2GB.
+        // We only use the proxy for the tiny .m3u8 manifest files to handle IP-locked auth.
+        // We use gigaAxios (Direct HF IP) for the heavy video segments (.ts, .mp4) to save budget.
+        const activeAxios = isM3U8 ? proxyAxios : gigaAxios;
+
+        const response = await activeAxios.get(finalFetchUrl, {
             headers: fetchHeaders,
             responseType: isM3U8 ? 'text' : 'stream',
             timeout: isM3U8 ? 15000 : 45000,
