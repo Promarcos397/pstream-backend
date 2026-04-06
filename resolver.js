@@ -1,22 +1,16 @@
 /**
- * P-Stream Giga Engine Resolver v8.1.0
- * "Direct Only — No Embeds"
+ * P-Stream Giga Engine Resolver v9.0.0
+ * "The Aether Overhaul — Peak Performance"
  */
 import { proxyAxios, stringAtob } from './utils/http.js';
 import { getRandomUA } from './utils/constants.js';
 
-// --- Extractors ---
-import { scrapeVidLink } from './extractors/vidlink.js';
-import { scrapeAutoEmbed } from './extractors/autoembed.js';
-import { scrapeVidSrcTo } from './extractors/vidsrcto.js';
-import { scrapeVidSrcMe } from './extractors/vidsrcme.js';
-import { scrapeVidSrc } from './extractors/vidsrcru.js';
-import { scrapeVidNest } from './extractors/vidnest.js';
-import { scrapeLookMovie } from './extractors/lookmovie.js';
-import { scrapeVidZee } from './extractors/vidzee.js';
-import { scrapeVixSrc } from './extractors/vixsrc.js';
-import { scrapePrimeSrc } from './extractors/primesrc.js';
+// --- Extractors (Aether/P-Stream Family) ---
 import { scrapeStreamBox } from './extractors/streambox.js';
+import { scrapeVidLink } from './extractors/vidlink.js';
+import { scrapeVidSrc } from './extractors/vidsrc.js';
+import { scrapePrimeSrc } from './extractors/primesrc.js';
+import { scrapeVidZee } from './extractors/vidzee.js';
 
 async function scrapeEmbedSuDirect(tmdbId, type, season, episode) {
     try {
@@ -51,32 +45,28 @@ async function scrapeEmbedSuDirect(tmdbId, type, season, episode) {
             } catch (e) {}
         }
         if (!resolved.length) return null;
-        return { success: true, provider: 'Embed.su ✨', sources: resolved, subtitles };
+        return { success: true, provider: 'Embed.su (Refined)', sources: resolved, subtitles };
     } catch (e) {}
     return null;
 }
 
 export async function resolveStreaming(tmdbId, type, season, episode, title, year) {
-    console.log(`[Resolver] Racing sources for: ${title || tmdbId} (${type})`);
+    console.log(`[Resolver] Racing Aether-Cluster sources for: ${title || tmdbId} (${type})`);
 
+    // Priority Order mirroring Aether.mom and P-Stream resurrection
     const providers = [
-        () => scrapeStreamBox(tmdbId, type, season, episode),
-        () => scrapeVidLink(tmdbId, type, season, episode),
-        () => scrapeVidSrcTo(tmdbId, type, season, episode),
-        () => scrapeVidSrcMe(tmdbId, type, season, episode),
-        () => scrapeVixSrc(tmdbId, type, season, episode),
-        () => scrapePrimeSrc(tmdbId, type, season, episode),
-        () => scrapeVidNest(tmdbId, type, season, episode),
-        () => scrapeVidSrc(tmdbId, type, season, episode),
-        () => (title && year) ? scrapeVidZee(title, year, type, season, episode) : null,
+        () => scrapeStreamBox(tmdbId, type, season, episode), // Priority #1: VidJoy fast-fetch
+        () => scrapeVidLink(tmdbId, type, season, episode),   // Priority #2: VidLink Encrypted API
+        () => scrapeVidSrc(tmdbId, type, season, episode),    // Priority #3: VidSrc.to/me/ru Cluster
+        () => scrapePrimeSrc(tmdbId, type, season, episode),  // Priority #4: Aggregator Fallback
         () => scrapeEmbedSuDirect(tmdbId, type, season, episode),
-        () => scrapeAutoEmbed(tmdbId, type, season, episode),
-        () => (title && year) ? scrapeLookMovie(title, year, type, season, episode) : null
+        () => (title && year) ? scrapeVidZee(title, year, type, season, episode) : null
     ];
 
+    // Racing strategy (2 concurrent batches)
     const stages = [
-        providers.slice(0, 7), // Re-ranked top tier (VidLink, VidSrc, etc.)
-        providers.slice(7)
+        providers.slice(0, 4), // High priority fast sources
+        providers.slice(4)     // Slower fallbacks
     ];
 
     for (const stage of stages) {
@@ -87,11 +77,12 @@ export async function resolveStreaming(tmdbId, type, season, episode, title, yea
 
         const bestResult = results.filter(r => {
             if (!r || !r.success || !r.sources?.length) return false;
-            // STRICT POLICY: No embeds, no iframes, no "bs"
+            // No junk embeds
             if (r.sources.some(s => s.isEmbed)) return false; 
             return true;
         })
         .sort((a, b) => {
+            // M3U8 (Adaptive) is better than direct MP4 for our rewriter
             const aM3U8 = a.sources[0]?.isM3U8;
             const bM3U8 = b.sources[0]?.isM3U8;
             if (aM3U8 && !bM3U8) return -1;
@@ -100,11 +91,11 @@ export async function resolveStreaming(tmdbId, type, season, episode, title, yea
         })[0];
 
         if (bestResult) {
-            console.log(`[Resolver] winner: ${bestResult.provider}`);
+            console.log(`[Resolver] Aether-Cluster Winner: ${bestResult.provider}`);
             return bestResult;
         }
     }
 
-    console.warn(`[Resolver] All providers failed for ${title || tmdbId}`);
-    return { success: false, error: 'No direct stream found' };
+    console.warn(`[Resolver] All cluster providers failed for ${title || tmdbId}`);
+    return { success: false, error: 'No direct stream found in family cluster.' };
 }
