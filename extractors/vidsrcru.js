@@ -3,7 +3,7 @@
  * 3-hop HTML scraping chain → extracts multi-quality M3U8 from cloudnestra.com CDN.
  * Does NOT use IP-signed tokens.
  */
-import axios from 'axios';
+import { proxyAxios } from '../utils/http.js';
 
 const BASE_URL = 'https://vsembed.ru';
 const HEADERS = {
@@ -22,7 +22,7 @@ const PLAYER_DOMAINS = {
 async function fetchPage(url) {
     try {
         if (url.startsWith('//')) url = 'https:' + url;
-        const { data, status } = await axios.get(url, { headers: HEADERS, timeout: 10000 });
+        const { data, status } = await proxyAxios.get(url, { headers: HEADERS, timeout: 10000 });
         return status === 200 ? data : null;
     } catch {
         return null;

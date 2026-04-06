@@ -3,7 +3,7 @@
  * Ported from legacy providers-production/src/providers/sources/autoembed.ts
  * Calls tom.autoembed.cc API which returns a direct HLS playlist URL.
  */
-import axios from 'axios';
+import { proxyAxios } from '../utils/http.js';
 
 const apiUrl = 'https://tom.autoembed.cc';
 
@@ -16,7 +16,7 @@ export async function scrapeAutoEmbed(tmdbId, type, season, episode) {
             id = `${tmdbId}/${season}/${episode}`;
         }
 
-        const { data } = await axios.get(`${apiUrl}/api/getVideoSource`, {
+        const { data } = await proxyAxios.get(`${apiUrl}/api/getVideoSource`, {
             params: { type: mediaType, id },
             headers: {
                 Referer: apiUrl,

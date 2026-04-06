@@ -1,4 +1,4 @@
-import axios from 'axios';
+import { proxyAxios } from '../utils/http.js';
 import * as cheerio from 'cheerio';
 import { unpack } from 'unpacker';
 
@@ -11,13 +11,13 @@ export async function scrapeFilemoon(embedUrl) {
             'Referer': new URL(embedUrl).origin + '/'
         };
 
-        const { data: html } = await axios.get(embedUrl, { headers });
+        const { data: html } = await proxyAxios.get(embedUrl, { headers });
         const $ = cheerio.load(html);
         
         const iframeSrc = $('iframe').first().attr('src');
         if (!iframeSrc) return null;
 
-        const { data: iframeHtml } = await axios.get(iframeSrc, { headers });
+        const { data: iframeHtml } = await proxyAxios.get(iframeSrc, { headers });
         const $iframe = cheerio.load(iframeHtml);
 
         const packedJs = $iframe('script').filter((_, el) => {

@@ -1,4 +1,4 @@
-import axios from 'axios';
+import { proxyAxios } from '../utils/http.js';
 
 const baseUrl = 'https://lmscript.xyz';
 
@@ -6,7 +6,7 @@ export async function scrapeLookMovie(id, type, season, episode, title, year) {
     try {
         // 1. Search for the media
         const searchPath = type === 'show' ? '/v1/shows' : '/v1/movies';
-        const { data: searchRes } = await axios.get(`${baseUrl}${searchPath}`, {
+        const { data: searchRes } = await proxyAxios.get(`${baseUrl}${searchPath}`, {
             params: { 'filters[q]': title },
             timeout: 5000
         });
@@ -25,7 +25,7 @@ export async function scrapeLookMovie(id, type, season, episode, title, year) {
         if (type === 'movie') {
             mediaId = result.id_movie;
         } else {
-            const { data: showDetails } = await axios.get(`${baseUrl}/v1/shows`, {
+            const { data: showDetails } = await proxyAxios.get(`${baseUrl}/v1/shows`, {
                 params: { expand: 'episodes', id: result.id_show },
                 timeout: 5000
             });
@@ -40,7 +40,7 @@ export async function scrapeLookMovie(id, type, season, episode, title, year) {
 
         // 3. Fetch streams and subtitles
         const viewPath = type === 'show' ? '/v1/episodes/view' : '/v1/movies/view';
-        const { data: streamData } = await axios.get(`${baseUrl}${viewPath}`, {
+        const { data: streamData } = await proxyAxios.get(`${baseUrl}${viewPath}`, {
             params: { expand: 'streams,subtitles', id: mediaId },
             timeout: 5000
         });

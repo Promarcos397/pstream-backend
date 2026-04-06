@@ -3,7 +3,7 @@
  * Hits 14 servers in parallel, AES-CBC decrypts each URL, returns HLS sources.
  * CDNs used (e.g. rapidairmax.site, serversicuro.cc) are NOT IP-signed.
  */
-import axios from 'axios';
+import { proxyAxios } from '../utils/http.js';
 import crypto from 'crypto';
 
 const BASE_URL = 'https://player.vidzee.wtf';
@@ -50,7 +50,7 @@ async function fetchServer(tmdbId, serverId, type, season, episode) {
         if (type === 'tv' && season && episode) {
             url += `&ss=${season}&ep=${episode}`;
         }
-        const { data } = await axios.get(url, { headers: HEADERS, timeout: 8000 });
+        const { data } = await proxyAxios.get(url, { headers: HEADERS, timeout: 8000 });
         return data;
     } catch {
         return null;

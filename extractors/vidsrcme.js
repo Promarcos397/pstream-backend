@@ -4,7 +4,7 @@
  *
  * Uses the advanced multi-algorithm decoder to resolve direct M3U8s.
  */
-import axios from 'axios';
+import { proxyAxios } from '../utils/http.js';
 import * as cheerio from 'cheerio';
 import { decodeVidSrcToken } from './vidSrcDecoder.js';
 import { USER_AGENTS } from '../utils/constants.js';
@@ -21,7 +21,7 @@ export async function scrapeVidSrcMe(tmdbId, type, season, episode) {
         const headers = { 'User-Agent': UA, Referer: BASE_URL };
 
         // Step 1: Load main embed page
-        const { data: pageHtml } = await axios.get(`${BASE_URL}${embedPath}`, { headers });
+        const { data: pageHtml } = await proxyAxios.get(`${BASE_URL}${embedPath}`, { headers });
         const $ = cheerio.load(pageHtml);
         
         // Find the "hash" or "data-id"
@@ -29,7 +29,7 @@ export async function scrapeVidSrcMe(tmdbId, type, season, episode) {
         if (!hash) return null;
 
         // Step 2: Handoff to vidsrc.stream/rcp (Handshake)
-        const { data: rcpHtml } = await axios.get(`https://vidsrc.stream/rcp/${hash}`, { 
+        const { data: rcpHtml } = await proxyAxios.get(`https://vidsrc.stream/rcp/${hash}`, { 
             headers: { ...headers, Referer: `${BASE_URL}${embedPath}` } 
         });
 
@@ -58,7 +58,7 @@ export async function scrapeVidSrcMe(tmdbId, type, season, episode) {
         if (!decodedUrl) return null;
 
         // Step 3: Fetch the direct stream source URL
-        const redirectRes = await axios.get(decodedUrl, {
+        const redirectRes = await proxyAxios.get(decodedUrl, {
             headers: { ...headers, Referer: `https://vidsrc.stream/rcp/${hash}` },
             maxRedirects: 0,
             validateStatus: s => s >= 200 && s < 400
@@ -68,7 +68,7 @@ export async function scrapeVidSrcMe(tmdbId, type, season, episode) {
         if (!finalSourceUrl) return null;
 
         // Step 4: Extract M3U8 from the final player page
-        const { data: playerHtml } = await axios.get(finalSourceUrl, { 
+        const { data: playerHtml } = await proxyAxios.get(finalSourceUrl, { 
             headers: { ...headers, Referer: `https://vidsrc.stream/` } 
         });
 

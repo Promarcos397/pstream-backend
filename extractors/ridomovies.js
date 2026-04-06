@@ -1,4 +1,4 @@
-import axios from 'axios';
+import { proxyAxios } from '../utils/http.js';
 import * as cheerio from 'cheerio';
 
 const ridoMoviesBase = `https://ridomovies.tv`;
@@ -17,7 +17,7 @@ async function decodeCloseload(url, referer) {
 
 export async function scrapeRidoMovies(id, type, season, episode, title, year) {
     try {
-        const { data: searchResult } = await axios.get(`${ridoMoviesApiBase}/search`, {
+        const { data: searchResult } = await proxyAxios.get(`${ridoMoviesApiBase}/search`, {
             params: { q: title },
             timeout: 5000
         });
@@ -38,7 +38,7 @@ export async function scrapeRidoMovies(id, type, season, episode, title, year) {
         let iframeSourceUrl = `/${targetMedia.fullSlug}/videos`;
 
         if (type === 'show') {
-            const { data: showPage } = await axios.get(`${ridoMoviesBase}/${targetMedia.fullSlug}`);
+            const { data: showPage } = await proxyAxios.get(`${ridoMoviesBase}/${targetMedia.fullSlug}`);
             const fullEpisodeSlug = `season-${season}/episode-${episode}`;
             
             // Extract episode ID using the regex from legacy code
@@ -53,7 +53,7 @@ export async function scrapeRidoMovies(id, type, season, episode, title, year) {
             iframeSourceUrl = `/episodes/${episodeId}/videos`;
         }
 
-        const { data: iframeSourceData } = await axios.get(`${ridoMoviesApiBase}${iframeSourceUrl}`);
+        const { data: iframeSourceData } = await proxyAxios.get(`${ridoMoviesApiBase}${iframeSourceUrl}`);
         if (!iframeSourceData.data?.length) return null;
 
         const $ = cheerio.load(iframeSourceData.data[0].url);

@@ -1,4 +1,4 @@
-import axios from 'axios';
+import { proxyAxios } from '../utils/http.js';
 import crypto from 'crypto';
 
 const baseUrl = 'https://second.vidnest.fun';
@@ -30,7 +30,7 @@ export async function scrapeVidNest(tmdbId, type, season, episode) {
             ? `${baseUrl}/hollymoviehd/movie/${tmdbId}` 
             : `${baseUrl}/hollymoviehd/tv/${tmdbId}/${season}/${episode}`;
 
-        const { data: res } = await axios.get(endpoint, {
+        const { data: res } = await proxyAxios.get(endpoint, {
             headers: { 'User-Agent': 'Mozilla/5.0' },
             timeout: 5000
         });
