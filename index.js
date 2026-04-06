@@ -497,6 +497,31 @@ function handleResponse(response, targetUrl, isM3U8, edgeHost, fetchHeaders, res
 app.get('/proxy/m3u8', (req, res) => res.redirect(301, `/proxy/stream?${new URL(req.url, 'http://x').search}`));
 app.get('/proxy/video', (req, res) => res.redirect(301, `/proxy/stream?${new URL(req.url, 'http://x').search}`));
 
+// --- INTRO & SUBTITLE PROXIES ---
+app.get('/api/introdb/media', async (req, res) => {
+    const { tmdb_id, season, episode } = req.query;
+    try {
+        const url = `https://api.theintrodb.org/v2/media?tmdb_id=${tmdb_id}${season ? `&season=${season}` : ''}${episode ? `&episode=${episode}` : ''}`;
+        const response = await gigaAxios.get(url);
+        res.json(response.data);
+    } catch (e) {
+        console.error(`[IntroDB Proxy Error] ${e.message}`);
+        res.status(e.response?.status || 500).json({ error: e.message });
+    }
+});
+
+app.get('/api/introdb/subtitles', async (req, res) => {
+    const { tmdb_id, type, season, episode } = req.query;
+    try {
+        const url = `https://api.theintrodb.org/api/subtitles?tmdb_id=${tmdb_id}&type=${type}${season ? `&season=${season}` : ''}${episode ? `&episode=${episode}` : ''}`;
+        const response = await gigaAxios.get(url);
+        res.json(response.data);
+    } catch (e) {
+        console.error(`[Subtitle Proxy Error] ${e.message}`);
+        res.status(e.response?.status || 500).json({ error: e.message });
+    }
+});
+
 // --- GIGA API ENDPOINTS ---
 
 // Progress stub — returns empty array so MovieCard doesn't flood the console with 404s
