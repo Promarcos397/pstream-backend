@@ -1,7 +1,7 @@
 import axios from 'axios';
 
-const KEY_HUB_URL = 'https://keys.fsh.sh/keys'; 
-// Alternative: https://vidsrc.icu/api/keys
+const KEY_HUB_URL = 'https://vidsrc.icu/api/keys'; 
+// Alternative: https://keys.fsh.sh/keys (Currently Dead)
 
 let cachedKeys = null;
 let lastFetch = 0;

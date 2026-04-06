@@ -12,7 +12,7 @@
     "@noble/hashes": "^1.8.0",
     "@supabase/supabase-js": "^2.100.1",
     "axios": "^1.14.0",
-    "axios-cookiejar-support": "^6.0.5",
+    "http-cookie-agent": "^6.0.7",
     "cors": "^2.8.6",
     "crypto-js": "^4.2.0",
     "dotenv": "^16.6.1",
@@ -24,7 +24,7 @@
     "puppeteer": "^22.15.0",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
-    "tough-cookie": "^6.0.1",
+    "tough-cookie": "^5.0.0",
     "tweetnacl": "^1.0.3",
     "cheerio": "1.0.0-rc.12",
     "unpacker": "^1.0.1"

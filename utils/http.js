@@ -1,28 +1,31 @@
 import axios from 'axios';
 import https from 'https';
-import { wrapper as axiosCookieJarWrapper } from 'axios-cookiejar-support';
+import { HttpsCookieAgent, createCookieAgent } from 'http-cookie-agent/http';
 import { CookieJar } from 'tough-cookie';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { getRandomUA } from './constants.js';
 
 // Browser-like TLS Agent (To bypass Cloudflare Bot Fight Mode)
-// Matches modern Chrome 120+ cipher ordering and extensions
 const chromeCiphers = 'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384';
 
-export const browserHttpsAgent = new https.Agent({ 
+const globalCookieJar = new CookieJar();
+const proxyUrl = process.env.RESIDENTIAL_PROXY_URL;
+
+// Combine HttpsProxyAgent and HttpsCookieAgent
+const ProxyCookieAgent = proxyUrl ? createCookieAgent(HttpsProxyAgent) : null;
+const proxyAgent = proxyUrl 
+    ? new ProxyCookieAgent({ cookies: { jar: globalCookieJar }, proxy: proxyUrl, ciphers: chromeCiphers, minVersion: 'TLSv1.2', honorCipherOrder: true }) 
+    : undefined;
+
+export const browserHttpsAgent = new HttpsCookieAgent({ 
+    cookies: { jar: globalCookieJar },
     ciphers: chromeCiphers, 
     minVersion: 'TLSv1.2', 
     honorCipherOrder: true 
 });
 
-const globalCookieJar = new CookieJar();
-const proxyUrl = process.env.RESIDENTIAL_PROXY_URL;
-const proxyAgent = proxyUrl ? new HttpsProxyAgent(proxyUrl) : undefined;
-
 // THE GIGA AGENT: Used by all scrapers and the playback proxy
-// This ensures IP alignment (Hugging Face IP) across the entire session
-export const gigaAxios = axiosCookieJarWrapper(axios.create({
-    jar: globalCookieJar,
+export const gigaAxios = axios.create({
     withCredentials: true,
     proxy: false, // We handle proxy manually via httpsAgent if needed
     httpsAgent: browserHttpsAgent,
@@ -42,15 +45,14 @@ export const gigaAxios = axiosCookieJarWrapper(axios.create({
         'Sec-Fetch-User': '?1',
         'Upgrade-Insecure-Requests': '1',
     }
-}));
+});
 
 // Agent with residential proxy fallback (for extractors that are IP-banned on HF)
-export const proxyAxios = axiosCookieJarWrapper(axios.create({
-    jar: globalCookieJar,
+export const proxyAxios = axios.create({
     withCredentials: true,
     httpsAgent: proxyAgent || browserHttpsAgent,
     timeout: 15000
-}));
+});
 
 export const stringAtob = (input) => Buffer.from(input, 'base64').toString('binary');
 export const stringBtoa = (input) => Buffer.from(input, 'binary').toString('base64');
