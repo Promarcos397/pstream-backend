@@ -13,9 +13,28 @@ const proxyUrl = process.env.RESIDENTIAL_PROXY_URL;
 
 // Combine HttpsProxyAgent and HttpsCookieAgent
 const ProxyCookieAgent = proxyUrl ? createCookieAgent(HttpsProxyAgent) : null;
-const proxyAgent = proxyUrl 
-    ? new ProxyCookieAgent(proxyUrl, { cookies: { jar: globalCookieJar }, ciphers: chromeCiphers, minVersion: 'TLSv1.2', honorCipherOrder: true }) 
-    : undefined;
+let proxyAgent;
+
+if (proxyUrl) {
+    try {
+        const pUrl = new URL(proxyUrl);
+        const proxyOptions = {
+            cookies: { jar: globalCookieJar },
+            ciphers: chromeCiphers,
+            minVersion: 'TLSv1.2',
+            honorCipherOrder: true
+        };
+        
+        // If the URL has a username/password, pass them explicitly to the agent
+        if (pUrl.username && pUrl.password) {
+            proxyOptions.auth = `${decodeURIComponent(pUrl.username)}:${decodeURIComponent(pUrl.password)}`;
+        }
+        
+        proxyAgent = new ProxyCookieAgent(proxyUrl, proxyOptions);
+    } catch (e) {
+        console.error('[HTTP] Failed to parse RESIDENTIAL_PROXY_URL:', e.message);
+    }
+}
 
 export const browserHttpsAgent = new HttpsCookieAgent({ 
     cookies: { jar: globalCookieJar },

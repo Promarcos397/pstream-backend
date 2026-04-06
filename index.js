@@ -395,6 +395,17 @@ app.get('/proxy/stream', async (req, res) => {
             try { upstreamHost = new URL(finalFetchUrl).hostname; } catch(e) {}
             
             console.error(`[Sniper Rejected] ${response.status} from ${upstreamHost}`);
+            
+            // SECURITY: If our residential proxy throws a 407 (Auth Required),
+            // NEVER return that 407 to the client browser, or Chrome will pop up a login box and kill the stream.
+            if (response.status === 407) {
+                return res.status(503).json({
+                    error: "Proxy Authentication Failure",
+                    status: 503,
+                    message: "The residential proxy is rejecting the connection. Check your budget or credentials."
+                });
+            }
+
             return res.status(response.status).json({ 
                 error: `Upstream Rejected`, 
                 status: response.status, 
