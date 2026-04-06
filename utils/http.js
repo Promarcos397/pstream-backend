@@ -14,7 +14,7 @@ const proxyUrl = process.env.RESIDENTIAL_PROXY_URL;
 // Combine HttpsProxyAgent and HttpsCookieAgent
 const ProxyCookieAgent = proxyUrl ? createCookieAgent(HttpsProxyAgent) : null;
 const proxyAgent = proxyUrl 
-    ? new ProxyCookieAgent({ cookies: { jar: globalCookieJar }, proxy: proxyUrl, ciphers: chromeCiphers, minVersion: 'TLSv1.2', honorCipherOrder: true }) 
+    ? new ProxyCookieAgent(proxyUrl, { cookies: { jar: globalCookieJar }, ciphers: chromeCiphers, minVersion: 'TLSv1.2', honorCipherOrder: true }) 
     : undefined;
 
 export const browserHttpsAgent = new HttpsCookieAgent({ 
