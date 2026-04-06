@@ -436,41 +436,62 @@ app.get('/proxy/stream', async (req, res) => {
 // Helper to handle the manifest/segment response logic
 function handleResponse(response, targetUrl, isM3U8, edgeHost, fetchHeaders, res, edgeBasePath = '') {
     if (isM3U8) {
-        let rewritten;
-        if (edgeHost && (targetUrl.includes('storm.vodvidl.site') || !!edgeBasePath)) {
-            console.log(`[Edge Bypass] 🎯 Rewriting manifest for direct Edge access.`);
-            
-            if (!edgeBasePath) {
-                const urlObj = new URL(targetUrl);
-                const pathParts = urlObj.pathname.split('/');
-                pathParts.pop(); 
-                const cleanPath = pathParts.join('/').replace(/^\/proxy/, '');
-                edgeBasePath = `${edgeHost}${cleanPath}/`;
-            }
+        let manifestContent = response.data;
+        const currentUrl = new URL(targetUrl);
+        const baseUrl = currentUrl.origin + currentUrl.pathname.substring(0, currentUrl.pathname.lastIndexOf('/') + 1);
 
-            rewritten = response.data.split('\n').map(line => {
-                const trimmed = line.trim();
-                if (!trimmed || trimmed.startsWith('#')) return line;
-                try {
-                    return (trimmed.startsWith('http')) ? line : new URL(trimmed, edgeBasePath).href;
-                } catch(e) { return line; }
-            }).join('\n');
-        } else {
-            const reqProtocol = res.req.headers['x-forwarded-proto'] || 'https';
-            const reqHost = res.req.get('host');
-            rewritten = rewriteFullProxyManifest(response.data, targetUrl, reqProtocol, reqHost, fetchHeaders.Referer);
-        }
+        // --- NEW: ROBUST MANIFEST REWRITER ---
+        // This regex finds both relative and absolute URLs in M3U8 (segments, sub-manifests, and keys)
+        const rewritten = manifestContent.replace(/^(?!#)(\S+)/gm, (match) => {
+            let absoluteUrl;
+            try {
+                if (match.startsWith('http')) {
+                    absoluteUrl = match;
+                } else if (match.startsWith('/')) {
+                    absoluteUrl = currentUrl.origin + match;
+                } else {
+                    absoluteUrl = baseUrl + match;
+                }
+
+                // Rewrite the URL to point back to our proxy, preserving headers
+                const proxyBase = `/proxy/`; // We use relative path for the frontend
+                const headersParam = encodeURIComponent(JSON.stringify(fetchHeaders));
+                return `${proxyBase}${encodeURIComponent(absoluteUrl)}?headers=${headersParam}`;
+            } catch (e) {
+                return match;
+            }
+        });
+
+        // Also handle #EXT-X-KEY (encryption keys) which are often missed by simple line replacement
+        const finalRewritten = rewritten.replace(/URI="(?!data:)([^"]+)"/g, (match, uri) => {
+            try {
+                let absoluteUri;
+                if (uri.startsWith('http')) {
+                    absoluteUri = uri;
+                } else if (uri.startsWith('/')) {
+                    absoluteUri = currentUrl.origin + uri;
+                } else {
+                    absoluteUri = baseUrl + uri;
+                }
+                const headersParam = encodeURIComponent(JSON.stringify(fetchHeaders));
+                return `URI="/proxy/${encodeURIComponent(absoluteUri)}?headers=${headersParam}"`;
+            } catch (e) {
+                return match;
+            }
+        });
 
         res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        return res.send(rewritten);
+        return res.send(finalRewritten);
     } else {
-        const h = ['content-type', 'content-length', 'accept-ranges', 'content-range', 'cache-control'];
-        h.forEach(k => { if (response.headers[k]) res.setHeader(k, response.headers[k]); });
-        res.setHeader('Access-Control-Allow-Origin', '*');
+        // Standard segment stream
+        res.setHeader('Content-Type', response.headers['content-type'] || 'video/MP2T');
+        if (response.headers['content-length']) {
+            res.setHeader('Content-Length', response.headers['content-length']);
+        }
         return response.data.pipe(res);
     }
 }
+
 
 // Legacy routes for temporary backward compatibility
 app.get('/proxy/m3u8', (req, res) => res.redirect(301, `/proxy/stream?${new URL(req.url, 'http://x').search}`));

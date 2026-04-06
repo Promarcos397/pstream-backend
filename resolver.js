@@ -15,6 +15,8 @@ import { scrapeVidNest } from './extractors/vidnest.js';
 import { scrapeLookMovie } from './extractors/lookmovie.js';
 import { scrapeVidZee } from './extractors/vidzee.js';
 import { scrapeVixSrc } from './extractors/vixsrc.js';
+import { scrapePrimeSrc } from './extractors/primesrc.js';
+import { scrapeStreamBox } from './extractors/streambox.js';
 
 async function scrapeEmbedSuDirect(tmdbId, type, season, episode) {
     try {
@@ -58,10 +60,12 @@ export async function resolveStreaming(tmdbId, type, season, episode, title, yea
     console.log(`[Resolver] Racing sources for: ${title || tmdbId} (${type})`);
 
     const providers = [
+        () => scrapeStreamBox(tmdbId, type, season, episode),
         () => scrapeVidLink(tmdbId, type, season, episode),
         () => scrapeVidSrcTo(tmdbId, type, season, episode),
         () => scrapeVidSrcMe(tmdbId, type, season, episode),
         () => scrapeVixSrc(tmdbId, type, season, episode),
+        () => scrapePrimeSrc(tmdbId, type, season, episode),
         () => scrapeVidNest(tmdbId, type, season, episode),
         () => scrapeVidSrc(tmdbId, type, season, episode),
         () => (title && year) ? scrapeVidZee(title, year, type, season, episode) : null,
