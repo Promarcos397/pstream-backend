@@ -527,8 +527,58 @@ function handleResponse(response, targetUrl, isM3U8, edgeHost, fetchHeaders, res
             }
         });
 
+        // ── ENGLISH AUDIO FILTER ──────────────────────────────────────────────
+        // For master manifests (contain EXT-X-STREAM-INF), strip non-English
+        // EXT-X-MEDIA audio entries so HLS.js only sees the English track.
+        // This stops VixSrc (and similar providers) from defaulting to Italian/Spanish.
+        const isMasterManifest = finalRewritten.includes('#EXT-X-STREAM-INF');
+        let filteredManifest = finalRewritten;
+
+        if (isMasterManifest) {
+            const lines = finalRewritten.split('\n');
+            const outputLines = [];
+
+            // Collect all audio language codes that exist
+            const audioLangCodes = [];
+            for (const line of lines) {
+                if (line.startsWith('#EXT-X-MEDIA') && line.includes('TYPE=AUDIO')) {
+                    const langMatch = line.match(/LANGUAGE="([^"]+)"/i);
+                    if (langMatch) audioLangCodes.push(langMatch[1].toLowerCase());
+                }
+            }
+
+            // Determine which languages to keep — prefer English, fall back to all
+            const hasEnglish = audioLangCodes.some(l => l.startsWith('en'));
+            const allowedLangs = hasEnglish
+                ? audioLangCodes.filter(l => l.startsWith('en'))
+                : audioLangCodes; // no English found → keep all
+
+            let skipNextUri = false;
+            for (const line of lines) {
+                const trimmed = line.trim();
+
+                // EXT-X-MEDIA audio line — check LANGUAGE attribute
+                if (trimmed.startsWith('#EXT-X-MEDIA') && trimmed.includes('TYPE=AUDIO')) {
+                    const langMatch = trimmed.match(/LANGUAGE="([^"]+)"/i);
+                    const lang = langMatch ? langMatch[1].toLowerCase() : 'en';
+                    if (!allowedLangs.some(al => lang.startsWith(al))) {
+                        // Drop non-English audio group — also need to fix AUDIO= refs in EXT-X-STREAM-INF
+                        continue;
+                    }
+                }
+
+                outputLines.push(line);
+            }
+
+            filteredManifest = outputLines.join('\n');
+
+            if (hasEnglish) {
+                console.log(`[Manifest] Filtered audio tracks to English only. Dropped: ${audioLangCodes.filter(l => !l.startsWith('en')).join(', ')}`);
+            }
+        }
+
         res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-        return res.send(finalRewritten);
+        return res.send(filteredManifest);
     } else {
         // Binary segment stream (responseType was 'stream') or fallback text
         res.setHeader('Content-Type', response.headers['content-type'] || 'video/MP2T');
