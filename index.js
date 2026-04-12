@@ -420,7 +420,7 @@ app.get('/proxy/stream', async (req, res) => {
         }
 
         const hostMatch = targetUrl.match(/[?&]host=([^&]+)/);
-        return handleResponse(response, targetUrl, isM3U8, (hostMatch ? decodeURIComponent(hostMatch[1]) : null), fetchHeaders, res, edgeBasePath);
+        return handleResponse(response, targetUrl, isM3U8, (hostMatch ? decodeURIComponent(hostMatch[1]) : null), fetchHeaders, res, edgeBasePath, req);
 
     } catch (e) {
         console.error(`[Sniper Fatal] ${e.stack}`);
@@ -434,14 +434,15 @@ app.get('/proxy/stream', async (req, res) => {
 });
 
 // Helper to handle the manifest/segment response logic
-function handleResponse(response, targetUrl, isM3U8, edgeHost, fetchHeaders, res, edgeBasePath = '') {
+function handleResponse(response, targetUrl, isM3U8, edgeHost, fetchHeaders, res, edgeBasePath = '', req = null) {
     if (isM3U8) {
         let manifestContent = response.data;
         const currentUrl = new URL(targetUrl);
         const baseUrl = currentUrl.origin + currentUrl.pathname.substring(0, currentUrl.pathname.lastIndexOf('/') + 1);
 
         // --- NEW: ROBUST MANIFEST REWRITER ---
-        // This regex finds both relative and absolute URLs in M3U8 (segments, sub-manifests, and keys)
+        const reqProto = (req?.headers?.['x-forwarded-proto']) || 'https';
+        const reqHost = req?.get?.('host') || 'ibrahimar397-pstream-giga.hf.space';
         const rewritten = manifestContent.replace(/^(?!#)(\S+)/gm, (match) => {
             let absoluteUrl;
             try {
@@ -453,10 +454,9 @@ function handleResponse(response, targetUrl, isM3U8, edgeHost, fetchHeaders, res
                     absoluteUrl = baseUrl + match;
                 }
 
-                // Rewrite the URL to point back to our proxy, preserving headers
-                const proxyBase = `/proxy/`; // We use relative path for the frontend
+                // Rewrite to correct /proxy/stream?url=... route
                 const headersParam = encodeURIComponent(JSON.stringify(fetchHeaders));
-                return `${proxyBase}${encodeURIComponent(absoluteUrl)}?headers=${headersParam}`;
+                return `${reqProto}://${reqHost}/proxy/stream?url=${encodeURIComponent(absoluteUrl)}&headers=${headersParam}`;
             } catch (e) {
                 return match;
             }
@@ -474,7 +474,7 @@ function handleResponse(response, targetUrl, isM3U8, edgeHost, fetchHeaders, res
                     absoluteUri = baseUrl + uri;
                 }
                 const headersParam = encodeURIComponent(JSON.stringify(fetchHeaders));
-                return `URI="/proxy/${encodeURIComponent(absoluteUri)}?headers=${headersParam}"`;
+                return `URI="/proxy/stream?url=${encodeURIComponent(absoluteUri)}&headers=${headersParam}"`;
             } catch (e) {
                 return match;
             }

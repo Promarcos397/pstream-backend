@@ -1,101 +1,76 @@
 /**
- * P-Stream Giga Engine Resolver v9.0.0
- * "The Aether Overhaul — Peak Performance"
+ * P-Stream Giga Engine Resolver v10.0.0
+ * "The Resurrection — Live Providers Only"
+ *
+ * Provider Status (2026-04-12):
+ * ✅ VixSrc       — vixsrc.to, has window.masterPlaylist token in HTML
+ * ✅ VidSrc.ru    — vsembed.ru 3-hop scrape → cloudnestra.com HLS
+ * ✅ VidSrc.to    — RC4 decrypt via keyService → VidPlay/Vidstream M3U8
+ * ✅ VidSrc.me    — hash XOR decode → vidsrc.stream handshake
+ * ⚠️ PrimeSrc    — Embed links only (Streamtape/Voe/Dood) — last resort
+ *
+ * Dead providers removed:
+ * ❌ StreamBox    — vidjoy.pro stuck behind CF bot challenge
+ * ❌ VidLink      — enc-dec.app returns 400 for plain TMDB id
+ * ❌ Embed.su     — domain dead (DNS NXDOMAIN)
+ * ❌ VidZee       — /api/server returns 404
+ * ❌ AutoEmbed    — tom.autoembed.cc dead (DNS NXDOMAIN)
  */
-import { proxyAxios, stringAtob } from './utils/http.js';
-import { getRandomUA } from './utils/constants.js';
 
-// --- Extractors (Aether/P-Stream Family) ---
-import { scrapeStreamBox } from './extractors/streambox.js';
-import { scrapeVidLink } from './extractors/vidlink.js';
-import { scrapeVidSrc } from './extractors/vidsrc.js';
+import { scrapeVixSrc } from './extractors/vixsrc.js';
+import { scrapeVidSrc as scrapeVidSrcRu } from './extractors/vidsrcru.js';
+import { scrapeVidSrcTo } from './extractors/vidsrcto.js';
+import { scrapeVidSrcMe } from './extractors/vidsrcme.js';
 import { scrapePrimeSrc } from './extractors/primesrc.js';
-import { scrapeVidZee } from './extractors/vidzee.js';
-
-async function scrapeEmbedSuDirect(tmdbId, type, season, episode) {
-    try {
-        const url = `https://embed.su/embed/${type}/${tmdbId}${type === 'tv' ? `/${season}/${episode}` : ''}`;
-        const { data: page } = await proxyAxios.get(url, {
-            headers: { 'User-Agent': getRandomUA(), Referer: 'https://embed.su' }
-        });
-        const vConfigMatch = page.match(/window\.vConfig\s*=\s*JSON\.parse\(atob\(`([^`]+)/i);
-        if (!vConfigMatch) return null;
-
-        const config = JSON.parse(stringAtob(vConfigMatch[1]));
-        const first = stringAtob(config.hash).split('.').map(i => i.split('').reverse().join(''));
-        const second = JSON.parse(stringAtob(first.join('').split('').reverse().join('')));
-        if (!second?.length) return null;
-
-        let subtitles = (config.subtitles || []).map(s => ({ url: s.file, lang: s.label, label: s.label }));
-
-        const resolved = [];
-        for (const s of second.slice(0, 3)) {
-            try {
-                const { data: streamData } = await proxyAxios.get(`https://embed.su/api/e/${s.hash}`, {
-                    headers: { Referer: 'https://embed.su/', 'User-Agent': getRandomUA() },
-                    timeout: 5000
-                });
-                const m3u8 = streamData?.match?.(/https?:\/\/[^\s"']+\.m3u8[^\s"']*/)?.[0]
-                    || streamData?.stream?.[0]?.playlist
-                    || streamData?.url;
-                if (m3u8 && m3u8.includes('.m3u8')) {
-                    resolved.push({ url: m3u8, quality: 'auto', isM3U8: true });
-                    break;
-                }
-            } catch (e) {}
-        }
-        if (!resolved.length) return null;
-        return { success: true, provider: 'Embed.su (Refined)', sources: resolved, subtitles };
-    } catch (e) {}
-    return null;
-}
 
 export async function resolveStreaming(tmdbId, type, season, episode, title, year) {
-    console.log(`[Resolver] Racing Aether-Cluster sources for: ${title || tmdbId} (${type})`);
+    console.log(`[Resolver] Racing live cluster for: ${title || tmdbId} (${type})`);
 
-    // Priority Order mirroring Aether.mom and P-Stream resurrection
-    const providers = [
-        () => scrapeStreamBox(tmdbId, type, season, episode), // Priority #1: VidJoy fast-fetch
-        () => scrapeVidLink(tmdbId, type, season, episode),   // Priority #2: VidLink Encrypted API
-        () => scrapeVidSrc(tmdbId, type, season, episode),    // Priority #3: VidSrc.to/me/ru Cluster
-        () => scrapePrimeSrc(tmdbId, type, season, episode),  // Priority #4: Aggregator Fallback
-        () => scrapeEmbedSuDirect(tmdbId, type, season, episode),
-        () => (title && year) ? scrapeVidZee(title, year, type, season, episode) : null
+    // Stage 1 — Direct M3U8 scrapers (fast, all confirmed live)
+    const stage1 = [
+        () => scrapeVixSrc(tmdbId, type, season, episode),         // #1: vixsrc.to token-signed HLS
+        () => scrapeVidSrcRu(tmdbId, type, season, episode),       // #2: vsembed.ru → cloudnestra HLS
+        () => scrapeVidSrcTo(tmdbId, type, season, episode),       // #3: vidsrc.to RC4 → VidPlay M3U8
+        () => scrapeVidSrcMe(tmdbId, type, season, episode),       // #4: vidsrc.me XOR handshake M3U8
     ];
 
-    // Racing strategy (2 concurrent batches)
-    const stages = [
-        providers.slice(0, 4), // High priority fast sources
-        providers.slice(4)     // Slower fallbacks
+    // Stage 2 — Last resort: embed links only (PrimeSrc: Streamtape/Voe/Dood/Filelions)
+    const stage2 = [
+        () => scrapePrimeSrc(tmdbId, type, season, episode),
     ];
 
-    for (const stage of stages) {
-        const results = await Promise.all(stage.map(p => {
-            const res = p();
-            return res ? res.catch(() => null) : null;
-        }));
+    // Stage 1: race all 4 parallel — take the fastest M3U8 winner
+    console.log('[Resolver] Stage 1: Racing VixSrc + VidSrcRU + VidSrcTo + VidSrcMe...');
+    const stage1Results = await Promise.all(
+        stage1.map(p => p().catch(() => null))
+    );
 
-        const bestResult = results.filter(r => {
-            if (!r || !r.success || !r.sources?.length) return false;
-            // No junk embeds
-            if (r.sources.some(s => s.isEmbed)) return false; 
-            return true;
-        })
-        .sort((a, b) => {
-            // M3U8 (Adaptive) is better than direct MP4 for our rewriter
-            const aM3U8 = a.sources[0]?.isM3U8;
-            const bM3U8 = b.sources[0]?.isM3U8;
-            if (aM3U8 && !bM3U8) return -1;
-            if (!aM3U8 && bM3U8) return 1;
-            return 0;
-        })[0];
+    const stage1Winner = stage1Results.find(r =>
+        r?.success && r.sources?.length && !r.sources.some(s => s.isEmbed)
+    );
 
-        if (bestResult) {
-            console.log(`[Resolver] Aether-Cluster Winner: ${bestResult.provider}`);
-            return bestResult;
-        }
+    if (stage1Winner) {
+        console.log(`[Resolver] ✅ Stage 1 Winner: ${stage1Winner.provider}`);
+        return stage1Winner;
     }
 
-    console.warn(`[Resolver] All cluster providers failed for ${title || tmdbId}`);
-    return { success: false, error: 'No direct stream found in family cluster.' };
+    console.warn('[Resolver] Stage 1 all failed — falling back to Stage 2 (embed links)');
+
+    // Stage 2: PrimeSrc embed fallback — allow embed sources as last resort
+    const stage2Results = await Promise.all(
+        stage2.map(p => p().catch(() => null))
+    );
+
+    const stage2Winner = stage2Results.find(r => r?.success && r.sources?.length);
+
+    if (stage2Winner) {
+        // Strip the isEmbed flag so the resolver passes it through,
+        // but mark it clearly so the frontend can show an iframe player
+        console.log(`[Resolver] ⚠️ Stage 2 Embed Fallback: ${stage2Winner.provider}`);
+        stage2Winner.isEmbedFallback = true;
+        return stage2Winner;
+    }
+
+    console.warn(`[Resolver] ❌ All providers failed for: ${title || tmdbId}`);
+    return { success: false, error: 'No stream found. All providers currently unavailable.' };
 }

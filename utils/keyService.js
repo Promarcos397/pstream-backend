@@ -1,7 +1,8 @@
-import { proxyAxios } from './http.js';
+import axios from 'axios';
 
-const KEY_HUB_URL = 'https://vidsrc.icu/api/keys'; 
-// Alternative: https://keys.fsh.sh/keys (Currently Dead)
+// Primary: Ciarands GitHub (flat JSON array of RC4 key strings)
+const KEY_HUB_URL = 'https://raw.githubusercontent.com/Ciarands/vidsrc-keys/main/keys.json';
+// Fallback: (Previously vidsrc.icu/api/keys — now 404)
 
 let cachedKeys = null;
 let lastFetch = 0;
@@ -14,11 +15,15 @@ export async function getLatestKeys() {
     }
 
     try {
-        const { data } = await proxyAxios.get(KEY_HUB_URL, { timeout: 15000 });
-        if (data) {
-            cachedKeys = data;
+        // Use vanilla axios (no proxy) for simple GitHub raw fetch
+        const { data } = await axios.get(KEY_HUB_URL, { timeout: 10000 });
+        if (Array.isArray(data) && data.length > 0) {
+            // Ciarands format: flat array of key strings
+            // vidsrc.to uses keys[0] (RC4 key for VidPlay streams)
+            cachedKeys = Array.isArray(data) ? { vidsrc_to: data[0], all: data } : data;
             lastFetch = now;
-            return data;
+            console.log(`[KeyService] ✅ Fetched ${Array.isArray(data) ? data.length : 1} key(s)`);
+            return cachedKeys;
         }
     } catch (e) {
         console.warn('[KeyService] Failed to fetch dynamic keys:', e.message);
