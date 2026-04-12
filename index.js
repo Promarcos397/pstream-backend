@@ -424,29 +424,30 @@ app.get('/proxy/stream', async (req, res) => {
         const activeAxios = isClearlyBinarySegment ? gigaAxios : (isM3U8 ? proxyAxios : proxyAxios);
         const responseType = isClearlyBinarySegment ? 'stream' : 'text';
 
-        const response = await activeAxios.get(finalFetchUrl, {
+        const activeAxiosOptions = {
             headers: fetchHeaders,
             responseType,
             timeout: isClearlyBinarySegment ? 45000 : 15000,
-            validateStatus: (s) => s < 500
-        });
+        };
 
+        let response;
+        try {
+            response = await activeAxios.get(finalFetchUrl, activeAxiosOptions);
+        } catch (proxyErr) {
+            // If the residential proxy fails (407/ECONNREFUSED), fall back to direct HF IP
+            if (proxyErr.response?.status === 407 || proxyErr.code === 'ECONNREFUSED' || (proxyErr.message || '').includes('407')) {
+                console.warn(`[Proxy Failover] Residential proxy rejected (${proxyErr.response?.status || proxyErr.code}). Retrying direct...`);
+                response = await gigaAxios.get(finalFetchUrl, { ...activeAxiosOptions, httpsAgent: undefined });
+            } else {
+                throw proxyErr;
+            }
+        }
+
+        // Handle 4xx from upstream (not from proxy — proxy errors would throw above)
         if (response.status >= 400) {
             let upstreamHost = 'unknown';
             try { upstreamHost = new URL(finalFetchUrl).hostname; } catch(e) {}
-            
-            console.error(`[Sniper Rejected] ${response.status} from ${upstreamHost}`);
-            
-            // SECURITY: If our residential proxy throws a 407 (Auth Required),
-            // NEVER return that 407 to the client browser, or Chrome will pop up a login box and kill the stream.
-            if (response.status === 407) {
-                return res.status(503).json({
-                    error: "Proxy Authentication Failure",
-                    status: 503,
-                    message: "The residential proxy is rejecting the connection. Check your budget or credentials."
-                });
-            }
-
+            console.error(`[Upstream Rejected] ${response.status} from ${upstreamHost}`);
             return res.status(response.status).json({ 
                 error: `Upstream Rejected`, 
                 status: response.status, 
