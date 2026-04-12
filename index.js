@@ -417,17 +417,17 @@ app.get('/proxy/stream', async (req, res) => {
             }
         }
 
-        // BANDWIDTH OPTIMIZATION: 
-        // Use 'text' for manifests (and ambiguous URLs) so we can inspect content-type + body.
-        // Only use 'stream' for files that are unambiguously binary segments (.ts, .aac, .mp4, etc.)
-        const isClearlyBinarySegment = /\.(ts|aac|mp4|m4s|m4v|m4a|webm|mp3)(\?|$)/i.test(targetUrl);
-        const activeAxios = isClearlyBinarySegment ? gigaAxios : (isM3U8 ? proxyAxios : proxyAxios);
-        const responseType = isClearlyBinarySegment ? 'stream' : 'text';
+        // Manifests → text (so URLs inside can be rewritten).
+        // ALL other requests (video/audio segments, even extensionless CDN URLs) → stream.
+        // IMPORTANT: Never fetch binary segments as 'text' — it corrupts binary data.
+        // The isM3U8 regex already covers /playlist/ (VixSrc) and all known manifest shapes.
+        const activeAxios = isM3U8 ? proxyAxios : gigaAxios;
+        const responseType = isM3U8 ? 'text' : 'stream';
 
         const activeAxiosOptions = {
             headers: fetchHeaders,
             responseType,
-            timeout: isClearlyBinarySegment ? 45000 : 15000,
+            timeout: isM3U8 ? 20000 : 45000,
         };
 
         let response;
@@ -471,13 +471,16 @@ app.get('/proxy/stream', async (req, res) => {
 
 // Helper to handle the manifest/segment response logic
 function handleResponse(response, targetUrl, isM3U8, edgeHost, fetchHeaders, res, edgeBasePath = '', req = null) {
-    // Secondary M3U8 detection via Content-Type (catches VixSrc /playlist/ and others
-    // whose URL pattern isn't obvious but whose response clearly is an HLS manifest)
+    // Secondary M3U8 detection via Content-Type.
+    // This only activates when isM3U8=true (response.data is text).
+    // When isM3U8=false, response.data is a binary stream — don't inspect it.
     const contentType = response.headers?.['content-type'] || '';
     const isActuallyM3U8 = isM3U8
-        || /mpegurl/i.test(contentType)
-        || /m3u8/i.test(contentType)
-        || (typeof response.data === 'string' && response.data.trimStart().startsWith('#EXTM3U'));
+        || (typeof response.data === 'string' && (
+            /mpegurl/i.test(contentType)
+            || /m3u8/i.test(contentType)
+            || response.data.trimStart().startsWith('#EXTM3U')
+        ));
 
     if (isActuallyM3U8) {
         let manifestContent = response.data;
