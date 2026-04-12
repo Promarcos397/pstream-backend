@@ -374,7 +374,12 @@ app.get('/proxy/stream', async (req, res) => {
         // Patch persistent NGINX double-encoding traps
         targetUrl = targetUrl.replace(/%252F/g, '/').replace(/%2F/gi, '/').replace(/%253D/g, '=').replace(/%3D/gi, '=');
 
-        const isM3U8 = /[.\/]m3u8/i.test(targetUrl) || /manifest/i.test(targetUrl) || /m3u/i.test(targetUrl);
+        // Detect M3U8 by URL pattern — includes /playlist/ (VixSrc), .m3u8, /manifest, etc.
+        const isM3U8 = /\.m3u8/i.test(targetUrl)
+            || /\/manifest/i.test(targetUrl)
+            || /\/playlist\//i.test(targetUrl)   // VixSrc: /playlist/{id}?token=...
+            || /\/master\b/i.test(targetUrl)      // /master.m3u8 variants
+            || /m3u/i.test(targetUrl);
         const fetchHeaders = extractSpoofedHeaders(req, targetUrl, targetUrl);
 
         let finalFetchUrl = '';
@@ -413,15 +418,16 @@ app.get('/proxy/stream', async (req, res) => {
         }
 
         // BANDWIDTH OPTIMIZATION: 
-        // Residential proxies usually charge per GB. A single movie = ~2GB.
-        // We only use the proxy for the tiny .m3u8 manifest files to handle IP-locked auth.
-        // We use gigaAxios (Direct HF IP) for the heavy video segments (.ts, .mp4) to save budget.
-        const activeAxios = isM3U8 ? proxyAxios : gigaAxios;
+        // Use 'text' for manifests (and ambiguous URLs) so we can inspect content-type + body.
+        // Only use 'stream' for files that are unambiguously binary segments (.ts, .aac, .mp4, etc.)
+        const isClearlyBinarySegment = /\.(ts|aac|mp4|m4s|m4v|m4a|webm|mp3)(\?|$)/i.test(targetUrl);
+        const activeAxios = isClearlyBinarySegment ? gigaAxios : (isM3U8 ? proxyAxios : proxyAxios);
+        const responseType = isClearlyBinarySegment ? 'stream' : 'text';
 
         const response = await activeAxios.get(finalFetchUrl, {
             headers: fetchHeaders,
-            responseType: isM3U8 ? 'text' : 'stream',
-            timeout: isM3U8 ? 15000 : 45000,
+            responseType,
+            timeout: isClearlyBinarySegment ? 45000 : 15000,
             validateStatus: (s) => s < 500
         });
 
@@ -464,7 +470,15 @@ app.get('/proxy/stream', async (req, res) => {
 
 // Helper to handle the manifest/segment response logic
 function handleResponse(response, targetUrl, isM3U8, edgeHost, fetchHeaders, res, edgeBasePath = '', req = null) {
-    if (isM3U8) {
+    // Secondary M3U8 detection via Content-Type (catches VixSrc /playlist/ and others
+    // whose URL pattern isn't obvious but whose response clearly is an HLS manifest)
+    const contentType = response.headers?.['content-type'] || '';
+    const isActuallyM3U8 = isM3U8
+        || /mpegurl/i.test(contentType)
+        || /m3u8/i.test(contentType)
+        || (typeof response.data === 'string' && response.data.trimStart().startsWith('#EXTM3U'));
+
+    if (isActuallyM3U8) {
         let manifestContent = response.data;
         const currentUrl = new URL(targetUrl);
         const baseUrl = currentUrl.origin + currentUrl.pathname.substring(0, currentUrl.pathname.lastIndexOf('/') + 1);
@@ -512,12 +526,17 @@ function handleResponse(response, targetUrl, isM3U8, edgeHost, fetchHeaders, res
         res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
         return res.send(finalRewritten);
     } else {
-        // Standard segment stream
+        // Binary segment stream (responseType was 'stream') or fallback text
         res.setHeader('Content-Type', response.headers['content-type'] || 'video/MP2T');
         if (response.headers['content-length']) {
             res.setHeader('Content-Length', response.headers['content-length']);
         }
-        return response.data.pipe(res);
+        // response.data is a stream when responseType='stream', a string/buffer otherwise
+        if (response.data && typeof response.data.pipe === 'function') {
+            return response.data.pipe(res);
+        } else {
+            return res.send(response.data);
+        }
     }
 }
 
@@ -527,15 +546,24 @@ app.get('/proxy/m3u8', (req, res) => res.redirect(301, `/proxy/stream?${new URL(
 app.get('/proxy/video', (req, res) => res.redirect(301, `/proxy/stream?${new URL(req.url, 'http://x').search}`));
 
 // --- INTRO & SUBTITLE PROXIES ---
+// IntroDB 403 fix: the public API now requires an Origin header to match their CORS policy.
+// We forward as if coming from the browser.
 app.get('/api/introdb/media', async (req, res) => {
     const { tmdb_id, season, episode } = req.query;
     try {
         const url = `https://api.theintrodb.org/v2/media?tmdb_id=${tmdb_id}${season ? `&season=${season}` : ''}${episode ? `&episode=${episode}` : ''}`;
-        const response = await gigaAxios.get(url);
+        const response = await gigaAxios.get(url, {
+            headers: {
+                'Origin': 'https://pstream-frontend.pages.dev',
+                'Referer': 'https://pstream-frontend.pages.dev/',
+                'Accept': 'application/json'
+            },
+            timeout: 8000
+        });
         res.json(response.data);
     } catch (e) {
-        console.error(`[IntroDB Proxy Error] ${e.message}`);
-        res.status(e.response?.status || 500).json({ error: e.message });
+        console.warn(`[IntroDB Media] ${e.response?.status || e.message} - returning empty`);
+        res.json({ segments: [] }); // Return empty instead of 500 so frontend doesn't crash
     }
 });
 
@@ -543,11 +571,18 @@ app.get('/api/introdb/subtitles', async (req, res) => {
     const { tmdb_id, type, season, episode } = req.query;
     try {
         const url = `https://api.theintrodb.org/api/subtitles?tmdb_id=${tmdb_id}&type=${type}${season ? `&season=${season}` : ''}${episode ? `&episode=${episode}` : ''}`;
-        const response = await gigaAxios.get(url);
+        const response = await gigaAxios.get(url, {
+            headers: {
+                'Origin': 'https://pstream-frontend.pages.dev',
+                'Referer': 'https://pstream-frontend.pages.dev/',
+                'Accept': 'application/json'
+            },
+            timeout: 8000
+        });
         res.json(response.data);
     } catch (e) {
-        console.error(`[Subtitle Proxy Error] ${e.message}`);
-        res.status(e.response?.status || 500).json({ error: e.message });
+        console.warn(`[IntroDB Subtitles] ${e.response?.status || e.message} - returning empty`);
+        res.json({ subtitles: [] }); // Return empty instead of 500
     }
 });
 
