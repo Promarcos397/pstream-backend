@@ -16,13 +16,21 @@ export async function getLatestKeys() {
 
     try {
         // Use vanilla axios (no proxy) for simple GitHub raw fetch
-        const { data } = await axios.get(KEY_HUB_URL, { timeout: 10000 });
+        // Retry once on failure (GitHub can have brief read timeouts)
+        let data = null;
+        for (let attempt = 0; attempt < 2; attempt++) {
+            try {
+                const res = await axios.get(KEY_HUB_URL, { timeout: 10000 });
+                data = res.data;
+                break;
+            } catch (e) {
+                if (attempt === 0) await new Promise(r => setTimeout(r, 1500));
+            }
+        }
         if (Array.isArray(data) && data.length > 0) {
-            // Ciarands format: flat array of key strings
-            // vidsrc.to uses keys[0] (RC4 key for VidPlay streams)
-            cachedKeys = Array.isArray(data) ? { vidsrc_to: data[0], all: data } : data;
+            cachedKeys = { vidsrc_to: data[0], all: data };
             lastFetch = now;
-            console.log(`[KeyService] ✅ Fetched ${Array.isArray(data) ? data.length : 1} key(s)`);
+            console.log(`[KeyService] ✅ Fetched ${data.length} key(s) from GitHub`);
             return cachedKeys;
         }
     } catch (e) {

@@ -5,10 +5,13 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 const supabaseUrl = process.env.SUPABASE_URL || '';
-const supabaseKey = process.env.SUPABASE_ANON_KEY || '';
+// Server-side MUST use the service role key (not the anon key).
+// The service role key bypasses Row Level Security and is safe for trusted server environments.
+// Get it from: Supabase Dashboard → Settings → API → service_role
+const supabaseKey = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY || '';
 
 if (!supabaseUrl || !supabaseKey) {
-  console.warn('[DB] ⚠️ SUPABASE_URL and SUPABASE_ANON_KEY not set.');
+  console.warn('[DB] ⚠️ SUPABASE_URL and SUPABASE_SERVICE_KEY not set. Profile sync will be unavailable.');
 }
 
 export const supabase = createClient(supabaseUrl, supabaseKey);
@@ -53,7 +56,7 @@ export async function getProfile(publicKey) {
     if (!data || data.length === 0) return null;
     return mapToFrontend(data[0]);
   } catch (err) {
-    console.error('[DB] Critical Fetch Errror:', err.message);
+    console.error('[DB] Critical Fetch Error:', err.message);
     return null;
   }
 }

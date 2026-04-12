@@ -30,9 +30,38 @@ export { redis };
 
 const JWT_SECRET = process.env.JWT_SECRET || 'p-stream-secret-token-key-v1';
 
-app.use(cors());
-app.use(express.json());
+// CORS — whitelist only the frontend domain
+const ALLOWED_ORIGINS = [
+    'https://pstream-frontend.pages.dev',
+    'https://ibrahimar397-pstream-giga.hf.space',
+    'http://localhost:5173',
+    'http://localhost:3000',
+    'http://localhost:4173'
+];
+app.use(cors({
+    origin: (origin, callback) => {
+        // Allow requests with no origin (curl, mobile apps, Hls.js segment fetches)
+        if (!origin || ALLOWED_ORIGINS.includes(origin) || origin.endsWith('.pages.dev')) {
+            callback(null, true);
+        } else {
+            callback(new Error(`CORS: Origin '${origin}' is not allowed`));
+        }
+    },
+    credentials: true
+}));
+app.use(express.json({ limit: '5mb' }));
 app.use('/assets', express.static('assets'));
+
+// Simple in-memory rate limiter for auth endpoints
+const rateLimitMap = new Map();
+function rateLimit(key, maxRequests = 10, windowMs = 60000) {
+    const now = Date.now();
+    const entry = rateLimitMap.get(key) || { count: 0, reset: now + windowMs };
+    if (now > entry.reset) { entry.count = 0; entry.reset = now + windowMs; }
+    entry.count++;
+    rateLimitMap.set(key, entry);
+    return entry.count > maxRequests;
+}
 
 // --- ASSET RESOLVER (Local vs Remote) ---
 
@@ -313,7 +342,7 @@ function extractSpoofedHeaders(req, targetUrl, defaultReferer) {
     const origin = customHeaders.origin || (referer ? new URL(referer).origin : '');
 
     return {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "User-Agent": getRandomUA(),
         "Referer": referer,
         "Origin": origin,
         "Accept": "*/*",
@@ -333,9 +362,9 @@ app.get('/proxy/stream', async (req, res) => {
         const urlStr = req.query.url;
         if (!urlStr) return res.status(400).send('No URL provided');
 
-        // 1. Deep Recover and Normalize the Target URL
+        // Safe bounded URL decode (max 5 iterations, no infinite loop)
         let targetUrl = String(urlStr);
-        while (targetUrl.includes('%')) {
+        for (let i = 0; i < 5; i++) {
             try {
                 const decoded = decodeURIComponent(targetUrl);
                 if (decoded === targetUrl) break;
@@ -567,6 +596,11 @@ app.get('/api/stream', async (req, res) => {
 app.get('/api/auth/challenge', async (req, res) => {
     const { publicKey } = req.query;
     if (!publicKey) return res.status(400).json({ error: 'Public key required' });
+    // Rate limit: 10 challenges per minute per IP
+    const ip = req.headers['x-forwarded-for']?.split(',')[0] || req.socket.remoteAddress;
+    if (rateLimit(`challenge:${ip}`, 10, 60000)) {
+        return res.status(429).json({ error: 'Too many requests. Please wait a minute.' });
+    }
     try {
         const challenge = await createChallenge(publicKey);
         res.json({ challenge });
@@ -575,6 +609,11 @@ app.get('/api/auth/challenge', async (req, res) => {
 
 app.post('/api/auth/verify', async (req, res) => {
     const { publicKey, signature, challenge, displayName, isSignUp } = req.body;
+    // Rate limit: 5 verify attempts per minute per IP
+    const ip = req.headers['x-forwarded-for']?.split(',')[0] || req.socket.remoteAddress;
+    if (rateLimit(`verify:${ip}`, 5, 60000)) {
+        return res.status(429).json({ error: 'Too many verification attempts. Please wait a minute.' });
+    }
     try {
         const isValid = await verifyChallenge(publicKey, signature, challenge);
         if (isValid) {
