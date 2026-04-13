@@ -22,6 +22,7 @@ import { scrapeVidSrc as scrapeVidSrcRu } from './extractors/vidsrcru.js';
 import { scrapeVidSrcTo } from './extractors/vidsrcto.js';
 import { scrapeVidSrcMe } from './extractors/vidsrcme.js';
 import { scrapePrimeSrc } from './extractors/primesrc.js';
+import { scrapeVdrkCaptions } from './subs_vdrk.js';
 
 export async function resolveStreaming(tmdbId, type, season, episode, title, year) {
     console.log(`[Resolver] Racing live cluster for: ${title || tmdbId} (${type})`);
@@ -39,18 +40,26 @@ export async function resolveStreaming(tmdbId, type, season, episode, title, yea
         () => scrapePrimeSrc(tmdbId, type, season, episode),
     ];
 
-    // Stage 1: race all 4 parallel — take the fastest M3U8 winner
+    // Stage 1: race all 4 parallel stream extractors + 1 external subtitle extractor
     console.log('[Resolver] Stage 1: Racing VixSrc + VidSrcRU + VidSrcTo + VidSrcMe...');
-    const stage1Results = await Promise.all(
-        stage1.map(p => p().catch(() => null))
-    );
+    
+    // Concurrently fetch streams and external subtitles (like VDRK)
+    const [stage1Results, externalSubtitles] = await Promise.all([
+        Promise.all(stage1.map(p => p().catch(() => null))),
+        scrapeVdrkCaptions(tmdbId, type, season, episode).catch(() => [])
+    ]);
 
     const stage1Winner = stage1Results.find(r =>
         r?.success && r.sources?.length && !r.sources.some(s => s.isEmbed)
     );
 
     if (stage1Winner) {
-        console.log(`[Resolver] ✅ Stage 1 Winner: ${stage1Winner.provider}`);
+        // Merge the external subtitles flawlessly with any returned by the provider
+        if (externalSubtitles && externalSubtitles.length > 0) {
+            stage1Winner.subtitles = [...(stage1Winner.subtitles || []), ...externalSubtitles];
+        }
+        
+        console.log(`[Resolver] ✅ Stage 1 Winner: ${stage1Winner.provider} (External Subs: ${externalSubtitles.length})`);
         return stage1Winner;
     }
 
