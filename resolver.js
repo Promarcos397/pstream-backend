@@ -22,7 +22,7 @@ import { scrapeVidSrc as scrapeVidSrcRu } from './extractors/vidsrcru.js';
 import { scrapeVidSrcTo } from './extractors/vidsrcto.js';
 import { scrapeVidSrcMe } from './extractors/vidsrcme.js';
 import { scrapePrimeSrc } from './extractors/primesrc.js';
-import { scrapeVdrkCaptions } from './subs_vdrk.js';
+import { scrapeVdrkCaptions } from './extractors/subs_vdrk.js';
 
 export async function resolveStreaming(tmdbId, type, season, episode, title, year) {
     console.log(`[Resolver] Racing live cluster for: ${title || tmdbId} (${type})`);
