@@ -436,10 +436,15 @@ app.get('/proxy/stream', async (req, res) => {
         try {
             response = await activeAxios.get(finalFetchUrl, activeAxiosOptions);
         } catch (proxyErr) {
-            // If the residential proxy fails (407/ECONNREFUSED), fall back to direct HF IP
-            if (proxyErr.response?.status === 407 || proxyErr.code === 'ECONNREFUSED' || (proxyErr.message || '').includes('407')) {
-                console.warn(`[Proxy Failover] Residential proxy rejected (${proxyErr.response?.status || proxyErr.code}). Retrying direct...`);
-                response = await gigaAxios.get(finalFetchUrl, { ...activeAxiosOptions, httpsAgent: undefined });
+            // Failover: 407 (Auth), 403 (Forbidden/Blocked), ECONNREFUSED (Dead Proxy), or 503 (Overloaded)
+            const status = proxyErr.response?.status;
+            if (status === 407 || status === 403 || status === 429 || status === 503 || proxyErr.code === 'ECONNREFUSED' || (proxyErr.message || '').includes('407')) {
+                console.warn(`[Proxy Failover] Proxy rejected/failed (${status || proxyErr.code}). Retrying direct...`);
+                try {
+                    response = await gigaAxios.get(finalFetchUrl, { ...activeAxiosOptions, httpsAgent: undefined });
+                } catch (directErr) {
+                    throw directErr;
+                }
             } else {
                 throw proxyErr;
             }
@@ -461,12 +466,14 @@ app.get('/proxy/stream', async (req, res) => {
         return handleResponse(response, targetUrl, isM3U8, (hostMatch ? decodeURIComponent(hostMatch[1]) : null), fetchHeaders, res, edgeBasePath, req);
 
     } catch (e) {
-        console.error(`[Sniper Fatal] ${e.stack}`);
-        res.status(500).json({
+        const status = e.response?.status || 500;
+        const msg = e.response?.data?.message || e.message;
+        console.error(`[Sniper Fatal] ${status} - ${msg}`);
+        res.status(status).json({
             success: false,
-            error: e.message,
+            error: msg,
             stack: e.stack,
-            message: "Fatal sniper engine exception during URL normalization."
+            message: "Sniper reported an upstream failure. This provider might be temporarily blocked or down."
         });
     }
 });
@@ -600,6 +607,24 @@ function handleResponse(response, targetUrl, isM3U8, edgeHost, fetchHeaders, res
 // Legacy routes for temporary backward compatibility
 app.get('/proxy/m3u8', (req, res) => res.redirect(301, `/proxy/stream?${new URL(req.url, 'http://x').search}`));
 app.get('/proxy/video', (req, res) => res.redirect(301, `/proxy/stream?${new URL(req.url, 'http://x').search}`));
+app.get('/proxy/subtitles/opensubtitles', async (req, res) => {
+    const { url } = req.query;
+    if (!url) return res.status(400).json({ error: 'No URL provided' });
+    try {
+        const response = await gigaAxios.get(url, {
+            headers: {
+                'X-User-Agent': req.headers['x-user-agent'] || 'VLSub 0.10.2',
+                'User-Agent': getRandomUA(),
+                'Accept': 'application/json'
+            },
+            timeout: 10000
+        });
+        res.json(response.data);
+    } catch (e) {
+        console.warn(`[OpenSubtitles Proxy] ${e.response?.status || e.message}`);
+        res.json([]); // Return empty array so frontend doesn't break
+    }
+});
 
 // --- INTRO & SUBTITLE PROXIES ---
 // IntroDB 403 fix: the public API now requires an Origin header to match their CORS policy.
