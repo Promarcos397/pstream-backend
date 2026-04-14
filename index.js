@@ -430,6 +430,7 @@ app.get('/proxy/stream', async (req, res) => {
             headers: fetchHeaders,
             responseType,
             timeout: isM3U8 ? 20000 : 45000,
+            validateStatus: () => true,
         };
 
         let response;
