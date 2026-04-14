@@ -28,7 +28,7 @@ if (process.env.REDIS_URL) {
 }
 export { redis };
 
-const JWT_SECRET = process.env.JWT_SECRET || 'p-stream-secret-token-key-v1';
+const JWT_SECRET = process.env.JWT_SECRET || 'Pstream-secret-token-key-v1';
 
 // CORS — whitelist only the frontend domain
 const ALLOWED_ORIGINS = [
@@ -156,7 +156,7 @@ app.get('/', (req, res) => {
     <!DOCTYPE html>
     <html lang="en">
     <head>
-        <title>P-Stream Engine</title>
+        <title>Pstream Engine</title>
         ${MASTER_DESIGN}
         <style>
             .hero-text { font-size: clamp(2.5rem, 8vw, 4.5rem); font-weight: 900; line-height: 1.1; margin-bottom: 1.5rem; letter-spacing: -2px; }
@@ -179,10 +179,10 @@ app.get('/', (req, res) => {
     <body>
         <div class="bg-layer"><div class="bg-img"></div><div class="bg-gradient"></div></div>
         <div class="container" style="max-width: 900px">
-            <a href="https://pstream.watch"><img src="${LOGO}" alt="P-Stream" class="logo" /></a>
+            <a href="https://pstream.watch"><img src="${LOGO}" alt="Pstream" class="logo" /></a>
             
             <h1 class="hero-text">Unlimited power, series and more</h1>
-            <p class="sub-text">P-Stream Engine v5.0.0 is ready. Launch the hub to explore your collection or check system health below.</p>
+            <p class="sub-text">Pstream Engine v5.0.0 is ready. Launch the hub to explore your collection or check system health below.</p>
             
             <div>
                 <a href="https://pstream.watch" class="main-btn">
@@ -220,7 +220,7 @@ app.get('/healthcheck', async (req, res) => {
         <!DOCTYPE html>
         <html lang="en">
         <head>
-            <title>P-Stream Diagnostics</title>
+            <title>Pstream Diagnostics</title>
             ${MASTER_DESIGN}
             <style>
                 .grid { grid-template-cols: 1fr 1fr 1fr; margin-bottom: 2rem !important; }
@@ -241,7 +241,7 @@ app.get('/healthcheck', async (req, res) => {
         <body>
             <div class="bg-layer"><div class="bg-img"></div><div class="bg-gradient"></div></div>
             <div class="container" style="max-width: 600px">
-                <a href="/"><img src="${LOGO}" alt="P-Stream" class="logo" /></a>
+                <a href="/"><img src="${LOGO}" alt="Pstream" class="logo" /></a>
                 <div class="card">
                     <h1>DIAGNOSTICS</h1>
                     <span class="tagline">Engine Performance Data</span>

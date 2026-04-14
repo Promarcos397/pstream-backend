@@ -1,5 +1,5 @@
 {
-  "name": "pstream-giga-backend",
+  "name": "Pstream-giga-backend",
   "version": "1.0.0",
   "description": "High-performance, resilient streaming engine for P-Stream",
   "main": "index.js",
