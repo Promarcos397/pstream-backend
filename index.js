@@ -33,6 +33,8 @@ const JWT_SECRET = process.env.JWT_SECRET || 'p-stream-secret-token-key-v1';
 // CORS — whitelist only the frontend domain
 const ALLOWED_ORIGINS = [
     'https://pstream-frontend.pages.dev',
+    'https://pstream.watch',
+    'https://www.pstream.watch',
     'https://ibrahimar397-pstream-giga.hf.space',
     'http://localhost:5173',
     'http://localhost:3000',
@@ -177,13 +179,13 @@ app.get('/', (req, res) => {
     <body>
         <div class="bg-layer"><div class="bg-img"></div><div class="bg-gradient"></div></div>
         <div class="container" style="max-width: 900px">
-            <a href="https://pstream-frontend.pages.dev"><img src="${LOGO}" alt="P-Stream" class="logo" /></a>
+            <a href="https://pstream.watch"><img src="${LOGO}" alt="P-Stream" class="logo" /></a>
             
             <h1 class="hero-text">Unlimited power, series and more</h1>
             <p class="sub-text">P-Stream Engine v5.0.0 is ready. Launch the hub to explore your collection or check system health below.</p>
             
             <div>
-                <a href="https://pstream-frontend.pages.dev" class="main-btn">
+                <a href="https://pstream.watch" class="main-btn">
                     Get Started 
                     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
                 </a>
@@ -608,8 +610,8 @@ app.get('/api/introdb/media', async (req, res) => {
         const url = `https://api.theintrodb.org/v2/media?tmdb_id=${tmdb_id}${season ? `&season=${season}` : ''}${episode ? `&episode=${episode}` : ''}`;
         const response = await gigaAxios.get(url, {
             headers: {
-                'Origin': 'https://pstream-frontend.pages.dev',
-                'Referer': 'https://pstream-frontend.pages.dev/',
+                'Origin': 'https://pstream.watch',
+                'Referer': 'https://pstream.watch/',
                 'Accept': 'application/json'
             },
             timeout: 8000
@@ -627,8 +629,8 @@ app.get('/api/introdb/subtitles', async (req, res) => {
         const url = `https://api.theintrodb.org/api/subtitles?tmdb_id=${tmdb_id}&type=${type}${season ? `&season=${season}` : ''}${episode ? `&episode=${episode}` : ''}`;
         const response = await gigaAxios.get(url, {
             headers: {
-                'Origin': 'https://pstream-frontend.pages.dev',
-                'Referer': 'https://pstream-frontend.pages.dev/',
+                'Origin': 'https://pstream.watch',
+                'Referer': 'https://pstream.watch/',
                 'Accept': 'application/json'
             },
             timeout: 8000
