@@ -37,6 +37,7 @@ import { scrapeVidSrcXyz }        from './extractors/vidsrcxyz.js';
 import { scrapeAutoEmbed }        from './extractors/autoembed.js';
 import { scrape2Embed }           from './extractors/twoembed.js';
 import { scrapeEmbedSu }          from './extractors/embedsu.js';
+import { scrapeVidLink }          from './extractors/vidlink.js';
 
 /**
  * Race multiple extractors concurrently.
@@ -107,13 +108,14 @@ export async function resolveStreaming(tmdbId, type, season, episode, title, yea
         return mergeSubtitles(winner1A);
     }
 
-    // ── Stage 1B: VidSrc cluster (auth-based, different CDN paths) ───────────
-    console.log('[Resolver] Stage 1B: Racing VidSrc cluster (to, me, ru, xyz)...');
+    // ── Stage 1B: Auth-based scrapers (different CDN paths) ─────────────────
+    console.log('[Resolver] Stage 1B: Racing VidSrc cluster + VidLink...');
     const stage1B = [
         () => scrapeVidSrcTo(tmdbId, type, season, episode),
         () => scrapeVidSrcMe(tmdbId, type, season, episode),
         () => scrapeVidSrcRu(tmdbId, type, season, episode),
         () => scrapeVidSrcXyz(tmdbId, type, season, episode),
+        () => scrapeVidLink(tmdbId, type, season, episode),
     ];
     const winner1B = await raceExtractors(stage1B, 25000);
     if (winner1B) {

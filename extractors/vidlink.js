@@ -1,51 +1,86 @@
-import axios from 'axios';
+/**
+ * VidLink Extractor — Hardened v2 (2026-04-15)
+ *
+ * VidLink uses a 2-step flow:
+ *   1. GET enc-dec.app/api/enc-vidlink?id={tmdbId} → encrypted ID
+ *   2. GET vidlink.pro/api/b/{type}/{encId}[/{s}/{e}] → stream JSON
+ *
+ * The stream JSON contains:
+ *   response.data.stream.playlist  → M3U8 URL
+ *   response.data.stream.captions  → subtitle array
+ *
+ * CDN: VidLink uses its own CDN — NOT IP-signed to the scraper IP.
+ * Server-proxy works fine.
+ */
+import { proxyAxios } from '../utils/http.js';
+import { USER_AGENTS } from '../utils/constants.js';
+
+const API_BASE = 'https://vidlink.pro';
+const ENC_API  = 'https://enc-dec.app/api/enc-vidlink';
+const UA = USER_AGENTS[0];
+
+const HEADERS = {
+    'User-Agent': UA,
+    'Referer': `${API_BASE}/`,
+    'Origin': API_BASE,
+};
 
 export async function scrapeVidLink(tmdbId, type, season, episode) {
     try {
-        // --- NEW VIDLINK LOGIC (Aether/P-Stream standard) ---
-        console.log(`[VidLink] 🔐 Requesting encryption for ${tmdbId}...`);
-        const encResponse = await axios.get(`https://enc-dec.app/api/enc-vidlink?id=${tmdbId}`);
-        if (!encResponse.data?.id) throw new Error('Encryption failed');
-        
-        const encryptedId = encResponse.data.id;
-        let apiUrl = `https://vidlink.pro/api/b/${type}/${encryptedId}`;
-        if (type === 'tv') {
-            apiUrl += `/${season}/${episode}`;
-        }
-
-        console.log(`[VidLink] 🚀 Fetching stream: ${apiUrl}`);
-        
-        const response = await axios.get(apiUrl, {
-            headers: {
-                'Referer': 'https://vidlink.pro/',
-                'Origin': 'https://vidlink.pro',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            }
+        // Step 1: Encrypt the TMDB ID
+        console.log(`[VidLink] Encrypting ID ${tmdbId}...`);
+        const encResp = await proxyAxios.get(ENC_API, {
+            params: { id: String(tmdbId) },
+            headers: HEADERS,
+            timeout: 8000,
         });
 
-        if (response.data?.stream?.playlist) {
-            return {
-                success: true,
-                provider: 'VidLink',
-                sources: [
-                    {
-                        url: response.data.stream.playlist,
-                        isM3U8: true,
-                        quality: 'Auto',
-                        referer: 'https://vidlink.pro/'
-                    }
-                ],
-                subtitles: response.data.stream.captions?.map(c => ({
-                    url: c.url,
-                    lang: c.language,
-                    label: c.language
-                })) || []
-            };
+        const encryptedId = encResp.data?.id;
+        if (!encryptedId) {
+            console.warn('[VidLink] Encryption API returned no ID');
+            return null;
         }
 
-        return { success: false, error: 'No stream found' };
+        // Step 2: Fetch the stream JSON
+        let apiUrl = type === 'tv'
+            ? `${API_BASE}/api/b/tv/${encryptedId}/${parseInt(season) || 1}/${parseInt(episode) || 1}`
+            : `${API_BASE}/api/b/movie/${encryptedId}`;
+
+        console.log(`[VidLink] Fetching stream: ${apiUrl}`);
+        const streamResp = await proxyAxios.get(apiUrl, {
+            headers: HEADERS,
+            timeout: 10000,
+        });
+
+        const playlist = streamResp.data?.stream?.playlist;
+        if (!playlist) {
+            console.warn('[VidLink] No playlist in response');
+            return null;
+        }
+
+        // Map captions from VidLink format
+        const subtitles = (streamResp.data?.stream?.captions || [])
+            .filter(c => c?.url)
+            .map(c => ({
+                url: c.url,
+                lang: (c.language || 'en').toLowerCase().slice(0, 2),
+                label: c.language || 'English',
+            }));
+
+        console.log(`[VidLink] ✅ Resolved. ${subtitles.length} subtitle tracks`);
+        return {
+            success: true,
+            provider: 'VidLink 🔗',
+            sources: [{
+                url: playlist,
+                isM3U8: true,
+                quality: 'Auto',
+                referer: `${API_BASE}/`,
+            }],
+            subtitles,
+        };
     } catch (e) {
-        console.error(`[VidLink Error] ${e.message}`);
-        return { success: false, error: e.message };
+        console.warn(`[VidLink] Error: ${e.message}`);
+        return null;
     }
 }
