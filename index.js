@@ -199,6 +199,13 @@ app.get('/', (req, res) => {
     `);
 });
 
+// --- ROUTE: PING (keep-alive / wake-up) ---
+// Ultra-lightweight. The frontend calls this on mount to wake the HF Space.
+// Returns in <1ms. No DB, no providers, no heavy processing.
+app.get('/api/ping', (req, res) => {
+    res.json({ ok: true, t: Date.now() });
+});
+
 // --- ROUTE: HEALTH CHECK ---
 
 app.get('/healthcheck', async (req, res) => {
