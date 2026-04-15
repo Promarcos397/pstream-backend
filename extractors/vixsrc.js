@@ -60,7 +60,8 @@ export async function scrapeVixSrc(tmdbId, type, s, e) {
                 url: playlistUrl,
                 quality: '1080p',
                 isM3U8: true,
-                noProxy: true,      // Token is IP/session-bound; must be fetched by browser directly
+                // noProxy removed: VixSrc CDN 403s browser XHRs because hls.js strips the Referer
+                // cross-origin. Route through /proxy/stream which sets Referer: https://vixsrc.to/
                 referer: `${BASE}/`
             }],
             subtitles: []
