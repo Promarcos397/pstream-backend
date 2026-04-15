@@ -11,7 +11,7 @@
  * The resolver reads health scores before building the race array.
  */
 
-import { redisClient } from './redis.js';
+import { redisClient } from '../utils/redis.js';
 
 const HEALTH_KEY_PREFIX = 'provider:health:';
 const SUSPEND_KEY_PREFIX = 'provider:suspend:';
@@ -138,7 +138,7 @@ export async function filterByHealth(providers) {
             continue;
         }
         const score = await getProviderHealth(p.name);
-        results.push({ ...p,HealthScore: score });
+        results.push({ ...p, HealthScore: score });
     }
     // Sort: higher score = earlier in array
     return results.sort((a, b) => b.HealthScore - a.HealthScore);
