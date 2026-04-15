@@ -86,6 +86,7 @@ export async function scrapeVidSrc(tmdbId, type, season, episode) {
             url,
             quality: 'auto',
             isM3U8: true,
+            noProxy: true,      // neonhorizonworkshops CDN blocks server IPs; browser fetch works
             referer: 'https://cloudnestra.com/'
         }));
 

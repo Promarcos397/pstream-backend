@@ -1,85 +1,142 @@
 /**
- * P-Stream Giga Engine Resolver v10.0.0
- * "The Resurrection — Live Providers Only"
+ * P-Stream Giga Engine Resolver v12.0.0
+ * "VaPlayer Integration — Clean API Cluster"
  *
- * Provider Status (2026-04-12):
- * ✅ VixSrc       — vixsrc.to, has window.masterPlaylist token in HTML
- * ✅ VidSrc.ru    — vsembed.ru 3-hop scrape → cloudnestra.com HLS
- * ✅ VidSrc.to    — RC4 decrypt via keyService → VidPlay/Vidstream M3U8
- * ✅ VidSrc.me    — hash XOR decode → vidsrc.stream handshake
- * ⚠️ PrimeSrc    — Embed links only (Streamtape/Voe/Dood) — last resort
+ * Provider Status (2026-04-15):
+ * ✅ VixSrc        — /api/movie/{id} JSON (/api/tv/{id}/{s}/{e}) → signed playlist URL (~0.4s)
+ * ✅ VidSrc.ru     — vsembed.ru 3-hop scrape → multi-CDN M3U8 (noProxy CDN)
+ * ✅ VaPlayer      — streamdata.vaplayer.ru GET API → 3-4 mirrors incl. justhd.tv (~0.5s)
+ * ✅ VidSrc.xyz    — cloudnestra RCP iframe → same noProxy CDN cluster
+ * ✅ VidSrc.to     — RC4 decrypt via keyService
+ * ✅ VidSrc.me     — hash XOR decode → vidsrc.stream
+ * ✅ MoviesAPI     — ww2.moviesapi.to API
+ * ✅ SuperEmbed    — multiembed.mov public embed
+ * ✅ VidZee        — AES-CBC decrypt → multi-CDN M3U8
+ * ⚠️ PrimeSrc     — Embed links only (last resort)
  *
- * Dead providers removed:
- * ❌ StreamBox    — vidjoy.pro stuck behind CF bot challenge
- * ❌ VidLink      — enc-dec.app returns 400 for plain TMDB id
- * ❌ Embed.su     — domain dead (DNS NXDOMAIN)
- * ❌ VidZee       — /api/server returns 404
- * ❌ AutoEmbed    — tom.autoembed.cc dead (DNS NXDOMAIN)
+ * Architecture notes:
+ * - noProxy sources go directly to browser (token/IP-locked CDNs)
+ * - Stage 1A races fastest API-first providers (all return within ~1s)
+ * - If ONE Stage 1A provider wins, others are cancelled by the race
+ * - Stages 1B/1C only engage if ALL Stage 1A providers fail
  */
 
-import { scrapeVixSrc } from './extractors/vixsrc.js';
+import { scrapeVixSrc }          from './extractors/vixsrc.js';
 import { scrapeVidSrc as scrapeVidSrcRu } from './extractors/vidsrcru.js';
-import { scrapeVidSrcTo } from './extractors/vidsrcto.js';
-import { scrapeVidSrcMe } from './extractors/vidsrcme.js';
-import { scrapePrimeSrc } from './extractors/primesrc.js';
-import { scrapeVdrkCaptions } from './extractors/subs_vdrk.js';
+import { extractVaPlayer }        from './extractors/vaplayer.js';
+import { scrapeVidSrcTo }         from './extractors/vidsrcto.js';
+import { scrapeVidSrcMe }         from './extractors/vidsrcme.js';
+import { scrapeVidZee }           from './extractors/vidzee.js';
+import { scrapePrimeSrc }         from './extractors/primesrc.js';
+import { scrapeVdrkCaptions }     from './extractors/subs_vdrk.js';
+import { scrapeMoviesApi }        from './extractors/moviesapi.js';
+import { scrapeSuperEmbed }       from './extractors/superembed.js';
+import { scrapeVidSrcXyz }        from './extractors/vidsrcxyz.js';
+
+/**
+ * Race multiple extractors concurrently.
+ * Returns the first successful result (non-null, has real M3U8 sources).
+ * Losers are abandoned but NOT cancelled (JS Promises can't be cancelled).
+ */
+function raceExtractors(extractors, timeoutMs = 20000) {
+    return new Promise(resolve => {
+        let settled = 0;
+        const total = extractors.length;
+        let resolved = false;
+
+        if (total === 0) { resolve(null); return; }
+
+        const done = (result) => {
+            if (!resolved && result?.success && result.sources?.length && !result.sources.every(s => s.isEmbed)) {
+                resolved = true;
+                resolve(result);
+            } else {
+                settled++;
+                if (!resolved && settled === total) resolve(null);
+            }
+        };
+
+        const timer = setTimeout(() => { if (!resolved) resolve(null); }, timeoutMs);
+
+        extractors.forEach(fn => {
+            fn().then(done).catch(() => done(null));
+        });
+    });
+}
 
 export async function resolveStreaming(tmdbId, type, season, episode, title, year) {
     console.log(`[Resolver] Racing live cluster for: ${title || tmdbId} (${type})`);
 
-    // Stage 1 — Direct M3U8 scrapers (fast, all confirmed live)
-    const stage1 = [
-        () => scrapeVixSrc(tmdbId, type, season, episode),         // #1: vixsrc.to token-signed HLS
-        () => scrapeVidSrcRu(tmdbId, type, season, episode),       // #2: vsembed.ru → cloudnestra HLS
-        () => scrapeVidSrcTo(tmdbId, type, season, episode),       // #3: vidsrc.to RC4 → VidPlay M3U8
-        () => scrapeVidSrcMe(tmdbId, type, season, episode),       // #4: vidsrc.me XOR handshake M3U8
-    ];
+    // Always fetch external subtitles in parallel — never blocks stream resolution
+    const externalSubsPromise = scrapeVdrkCaptions(tmdbId, type, season, episode).catch(() => []);
 
-    // Stage 2 — Last resort: embed links only (PrimeSrc: Streamtape/Voe/Dood/Filelions)
-    const stage2 = [
-        () => scrapePrimeSrc(tmdbId, type, season, episode),
-    ];
-
-    // Stage 1: race all 4 parallel stream extractors + 1 external subtitle extractor
-    console.log('[Resolver] Stage 1: Racing VixSrc + VidSrcRU + VidSrcTo + VidSrcMe...');
-    
-    // Concurrently fetch streams and external subtitles (like VDRK)
-    const [stage1Results, externalSubtitles] = await Promise.all([
-        Promise.all(stage1.map(p => p().catch(() => null))),
-        scrapeVdrkCaptions(tmdbId, type, season, episode).catch(() => [])
-    ]);
-
-    const stage1Winner = stage1Results.find(r =>
-        r?.success && r.sources?.length && !r.sources.some(s => s.isEmbed)
-    );
-
-    if (stage1Winner) {
-        // Merge the external subtitles flawlessly with any returned by the provider
-        if (externalSubtitles && externalSubtitles.length > 0) {
-            stage1Winner.subtitles = [...(stage1Winner.subtitles || []), ...externalSubtitles];
+    const mergeSubtitles = async (result) => {
+        if (result) {
+            const externalSubtitles = await externalSubsPromise;
+            if (externalSubtitles?.length > 0) {
+                result.subtitles = [...(result.subtitles || []), ...externalSubtitles];
+            }
         }
-        
-        console.log(`[Resolver] ✅ Stage 1 Winner: ${stage1Winner.provider} (External Subs: ${externalSubtitles.length})`);
-        return stage1Winner;
+        return result;
+    };
+
+    // ── Stage 1A: Fast API-first providers (clean JSON, sub-second) ─────────
+    // All three use documented endpoints and return quickly.
+    // VixSrc: /api/movie/{id} — token-signed playlist
+    // VidSrcRu: vsembed.ru scrape — cloudnestra multi-CDN (noProxy)
+    // VaPlayer: streamdata.vaplayer.ru GET — 3-4 M3U8 mirrors
+    console.log('[Resolver] Stage 1A: Racing API-first providers (VixSrc, VidSrc.ru, VaPlayer)...');
+    const stage1A = [
+        () => scrapeVixSrc(tmdbId, type, season, episode),
+        () => scrapeVidSrcRu(tmdbId, type, season, episode),
+        () => extractVaPlayer({ tmdbId, type, season, episode }),
+    ];
+    const winner1A = await raceExtractors(stage1A, 14000);
+    if (winner1A) {
+        console.log(`[Resolver] ✅ Stage 1A Winner: ${winner1A.provider}`);
+        return mergeSubtitles(winner1A);
     }
 
-    console.warn('[Resolver] Stage 1 all failed — falling back to Stage 2 (embed links)');
-
-    // Stage 2: PrimeSrc embed fallback — allow embed sources as last resort
-    const stage2Results = await Promise.all(
-        stage2.map(p => p().catch(() => null))
-    );
-
-    const stage2Winner = stage2Results.find(r => r?.success && r.sources?.length);
-
-    if (stage2Winner) {
-        // Strip the isEmbed flag so the resolver passes it through,
-        // but mark it clearly so the frontend can show an iframe player
-        console.log(`[Resolver] ⚠️ Stage 2 Embed Fallback: ${stage2Winner.provider}`);
-        stage2Winner.isEmbedFallback = true;
-        return stage2Winner;
+    // ── Stage 1B: VidSrc cluster (cloudnestra path + RC4 handshakes) ─────────
+    console.log('[Resolver] Stage 1B: Racing VidSrc cluster (xyz, to, me)...');
+    const stage1B = [
+        () => scrapeVidSrcXyz(tmdbId, type, season, episode),
+        () => scrapeVidSrcTo(tmdbId, type, season, episode),
+        () => scrapeVidSrcMe(tmdbId, type, season, episode),
+    ];
+    const winner1B = await raceExtractors(stage1B, 25000);
+    if (winner1B) {
+        console.log(`[Resolver] ✅ Stage 1B Winner: ${winner1B.provider}`);
+        return mergeSubtitles(winner1B);
     }
+
+    // ── Stage 1C: Other embed scrapers ───────────────────────────────────────
+    console.log('[Resolver] Stage 1C: Racing embed scrapers (MoviesAPI, SuperEmbed, VidZee)...');
+    const stage1C = [
+        () => scrapeMoviesApi(tmdbId, type, season, episode),
+        () => scrapeSuperEmbed(tmdbId, type, season, episode),
+        () => scrapeVidZee(tmdbId, type, season, episode),
+    ];
+    const winner1C = await raceExtractors(stage1C, 20000);
+    if (winner1C) {
+        console.log(`[Resolver] ✅ Stage 1C Winner: ${winner1C.provider}`);
+        return mergeSubtitles(winner1C);
+    }
+
+    // ── Stage 2: Last-resort embed-only ──────────────────────────────────────
+    console.log('[Resolver] Stage 2: Falling back to embed-only sources (PrimeSrc)...');
+    try {
+        const stage2Result = await scrapePrimeSrc(tmdbId, type, season, episode);
+        if (stage2Result?.success && stage2Result.sources?.length) {
+            console.log(`[Resolver] ⚠️ Stage 2 Embed Fallback: ${stage2Result.provider}`);
+            stage2Result.isEmbedFallback = true;
+            return stage2Result;
+        }
+    } catch (e) { /* ignore */ }
 
     console.warn(`[Resolver] ❌ All providers failed for: ${title || tmdbId}`);
-    return { success: false, error: 'No stream found. All providers currently unavailable.' };
+    return {
+        success: false,
+        error: 'No stream found. All providers are currently unavailable. Please try again in a moment.'
+    };
 }

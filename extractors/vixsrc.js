@@ -1,64 +1,73 @@
-import { proxyAxios } from '../utils/http.js';
+import { proxyAxios, gigaAxios } from '../utils/http.js';
 
 /**
- * VixSrc Extractor (Updated 2026-04-12)
+ * VixSrc Extractor — Hardened v3 (2026-04-15)
  * 
- * The page renders a `window.masterPlaylist` object with:
- *   { params: { token, expires, asn }, url: 'https://vixsrc.to/playlist/{id}' }
+ * VixSrc exposes a clean JSON API:
+ *   GET /api/movie/{tmdbId}  → { src: "/embed/{id}?token=...&expires=..." }
+ *   GET /api/tv/{tmdbId}     → { src: "/embed/{id}?token=...&expires=..." }
  * 
- * Final URL = url + "?token=" + token + "&expires=" + expires + "&h=1"
+ * The embed page is an iframe served from vixcloud.co which contains the M3U8.
+ * The /playlist/{id}?token=...&expires=... is the signed M3U8 playlist.
  */
+const BASE = 'https://vixsrc.to';
+
+const HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Accept': 'application/json',
+    'Referer': `${BASE}/`,
+    'Origin': BASE,
+};
+
 export async function scrapeVixSrc(tmdbId, type, s, e) {
-    const baseUrl = 'https://vixsrc.to';
-    const headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Referer': baseUrl,
-        'Origin': baseUrl
-    };
-
     try {
-        const pageUrl = type === 'movie'
-            ? `${baseUrl}/movie/${tmdbId}`
-            : `${baseUrl}/tv/${tmdbId}/${s}/${e}`;
+        // Step 1: Get the signed embed src via JSON API
+        const apiPath = type === 'movie'
+            ? `/api/movie/${tmdbId}`
+            : `/api/tv/${tmdbId}/${s}/${e}`;
 
-        console.log(`[VixSrc] Fetching: ${pageUrl}`);
-        const { data: html } = await proxyAxios.get(pageUrl, { headers, timeout: 10000 });
+        console.log(`[VixSrc] Fetching API: ${BASE}${apiPath}`);
+        const { data: apiData } = await proxyAxios.get(`${BASE}${apiPath}`, { headers: HEADERS, timeout: 10000 });
 
-        // New extraction: window.masterPlaylist object in inline <script>
-        const playlistUrlMatch = html.match(/url\s*:\s*['"]([^'"]+)['"]/);
-        const tokenMatch       = html.match(/['"]token['"]\s*:\s*['"]([^'"]+)['"]/);
-        const expiresMatch     = html.match(/['"]expires['"]\s*:\s*['"]([^'"]+)['"]/);
-
-        if (!playlistUrlMatch || !tokenMatch || !expiresMatch) {
-            console.log('[VixSrc] Could not find masterPlaylist tokens');
+        if (!apiData?.src) {
+            console.log('[VixSrc] No src in API response');
             return null;
         }
 
-        const playlistUrl = playlistUrlMatch[1];
-        const token       = tokenMatch[1];
-        const expires     = expiresMatch[1];
+        // apiData.src is like "/embed/231752?token=...&expires=..."
+        const embedSrc = apiData.src.startsWith('http') ? apiData.src : `${BASE}${apiData.src}`;
+        const embedUrl = new URL(embedSrc);
 
-        const separator = playlistUrl.includes('?') ? '&' : '?';
-        const finalUrl  = `${playlistUrl}${separator}token=${token}&expires=${expires}&h=1`;
+        // Extract token and expires from embed URL
+        const token = embedUrl.searchParams.get('token');
+        const expires = embedUrl.searchParams.get('expires');
+        const videoId = embedUrl.pathname.split('/').pop();
 
-        console.log(`[VixSrc] ✅ Resolved: ${finalUrl}`);
+        if (!token || !expires || !videoId) {
+            console.log('[VixSrc] Missing token/expires/videoId from embed src');
+            return null;
+        }
 
+        // Step 2: Build the signed playlist URL directly
+        // VixSrc playlists are at: {BASE}/playlist/{videoId}?token={token}&expires={expires}&h=1
+        const playlistUrl = `${BASE}/playlist/${videoId}?token=${token}&expires=${expires}&h=1`;
+
+        console.log(`[VixSrc] ✅ Resolved: ${playlistUrl.substring(0, 80)}...`);
         return {
             success: true,
             provider: 'VixSrc ⚡',
             sources: [{
-                url: finalUrl,
+                url: playlistUrl,
                 quality: '1080p',
                 isM3U8: true,
-                referer: `${baseUrl}/`
+                noProxy: true,      // Token is IP/session-bound; must be fetched by browser directly
+                referer: `${BASE}/`
             }],
             subtitles: []
         };
 
     } catch (error) {
-        console.error(`[VixSrc] Error: ${error.message}`);
+        console.warn(`[VixSrc] Error: ${error.message}`);
         return null;
     }
 }

@@ -11,6 +11,7 @@ import { getProfile, updateProfile, deleteProfile } from './utils/db.js';
 import { resolveStreaming } from './resolver.js';
 import { USER_AGENTS, getRandomUA } from './utils/constants.js';
 import Redis from 'ioredis';
+import { recordProviderError, recordProviderSuccess, getAllProviderHealth } from './services/providerHealth.js';
 dotenv.config();
 
 import { gigaAxios, proxyAxios, browserHttpsAgent } from './utils/http.js';
@@ -778,6 +779,42 @@ app.post('/api/sync', authenticateToken, async (req, res) => {
 
 app.delete('/api/sync', authenticateToken, async (req, res) => {
     try { await deleteProfile(req.user.publicKey); res.json({ success: true }); } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+
+// ── Provider Health Reporting (self-healing error loop) ───────────────────────
+// Frontend calls this when HLS.js fires a fatal error on a stream
+app.post('/api/stream/report-error', async (req, res) => {
+    try {
+        const { provider, tmdbId, type, error, errorCode } = req.body;
+        if (!provider) return res.status(400).json({ error: 'Missing provider' });
+        await recordProviderError(provider, { tmdbId, type, error, errorCode });
+        console.log(`[HealthReport] Error reported for ${provider}: ${error || errorCode}`);
+        res.json({ success: true });
+    } catch (e) {
+        res.json({ success: false }); // Non-critical, always return 200-ish
+    }
+});
+
+// Frontend calls this when a stream plays successfully (positive signal)
+app.post('/api/stream/report-success', async (req, res) => {
+    try {
+        const { provider } = req.body;
+        if (provider) await recordProviderSuccess(provider);
+        res.json({ success: true });
+    } catch (e) {
+        res.json({ success: false });
+    }
+});
+
+// Admin: view all provider health scores
+app.get('/api/providers/health', async (req, res) => {
+    try {
+        const health = await getAllProviderHealth();
+        res.json({ success: true, providers: health, ts: Date.now() });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
 });
 
 app.listen(PORT, () => {
