@@ -1,24 +1,26 @@
 /**
- * P-Stream Giga Engine Resolver v12.0.0
- * "VaPlayer Integration — Clean API Cluster"
+ * P-Stream Giga Engine Resolver v13.0.0
+ * "IP-Block Recovery — CDN Diversification"
  *
  * Provider Status (2026-04-15):
- * ✅ VixSrc        — /api/movie/{id} JSON (/api/tv/{id}/{s}/{e}) → signed playlist URL (~0.4s)
- * ✅ VidSrc.ru     — vsembed.ru 3-hop scrape → multi-CDN M3U8 (noProxy CDN)
- * ✅ VaPlayer      — streamdata.vaplayer.ru GET API → 3-4 mirrors incl. justhd.tv (~0.5s)
- * ✅ VidSrc.xyz    — cloudnestra RCP iframe → same noProxy CDN cluster
- * ✅ VidSrc.to     — RC4 decrypt via keyService
+ * ✅ VixSrc        — /api/movie/{id} JSON → signed playlist (noProxy, browser-direct)
+ * ✅ AutoEmbed     — tom.autoembed.cc clean JSON API → direct HLS (~0.5s)
+ * ✅ VidZee        — AES-CBC decrypt → multi-CDN (rapidairmax, serversicuro — not IP-signed)
+ * ✅ VidSrc.to     — RC4 decrypt via keyService → VidPlay M3U8
  * ✅ VidSrc.me     — hash XOR decode → vidsrc.stream
- * ✅ MoviesAPI     — ww2.moviesapi.to API
- * ✅ SuperEmbed    — multiembed.mov public embed
- * ✅ VidZee        — AES-CBC decrypt → multi-CDN M3U8
+ * ✅ MoviesAPI     — ww2.moviesapi.to API → flixcdn M3U8
+ * ✅ SuperEmbed    — multiembed.mov public embed → direct M3U8
+ * ✅ VidSrc.ru     — vsembed.ru 3-hop → cloudnestra (noProxy)
+ * ✅ VidSrc.xyz    — cloudnestra RCP iframe (noProxy)
+ * ⚠️ VaPlayer      — DEMOTED: brightpathsignals/nextgenmarketinghub CDN IP-blocks HF Space
  * ⚠️ PrimeSrc     — Embed links only (last resort)
  *
- * Architecture notes:
- * - noProxy sources go directly to browser (token/IP-locked CDNs)
- * - Stage 1A races fastest API-first providers (all return within ~1s)
- * - If ONE Stage 1A provider wins, others are cancelled by the race
- * - Stages 1B/1C only engage if ALL Stage 1A providers fail
+ * Architecture:
+ * - Stage 1A: Fastest non-IP-blocked providers (VixSrc noProxy, AutoEmbed, VidZee)
+ * - Stage 1B: Auth-based scrapers (VidSrc.to RC4, VidSrc.me, VidSrc.ru, VidSrc.xyz)
+ * - Stage 1C: Embed scrapers (MoviesAPI, SuperEmbed)
+ * - Stage 2: VaPlayer (HF IP may be blocked on its CDN, try anyway as fallback)
+ * - Stage 3: PrimeSrc embed-only last resort
  */
 
 import { scrapeVixSrc }          from './extractors/vixsrc.js';
@@ -32,6 +34,9 @@ import { scrapeVdrkCaptions }     from './extractors/subs_vdrk.js';
 import { scrapeMoviesApi }        from './extractors/moviesapi.js';
 import { scrapeSuperEmbed }       from './extractors/superembed.js';
 import { scrapeVidSrcXyz }        from './extractors/vidsrcxyz.js';
+import { scrapeAutoEmbed }        from './extractors/autoembed.js';
+import { scrape2Embed }           from './extractors/twoembed.js';
+import { scrapeEmbedSu }          from './extractors/embedsu.js';
 
 /**
  * Race multiple extractors concurrently.
@@ -80,16 +85,21 @@ export async function resolveStreaming(tmdbId, type, season, episode, title, yea
         return result;
     };
 
-    // ── Stage 1A: Fast API-first providers (clean JSON, sub-second) ─────────
-    // All three use documented endpoints and return quickly.
-    // VixSrc: /api/movie/{id} — token-signed playlist
-    // VidSrcRu: vsembed.ru scrape — cloudnestra multi-CDN (noProxy)
-    // VaPlayer: streamdata.vaplayer.ru GET — 3-4 M3U8 mirrors
-    console.log('[Resolver] Stage 1A: Racing API-first providers (VixSrc, VidSrc.ru, VaPlayer)...');
+    // ── Stage 1A: Fast, non-IP-blocked providers ────────────────────────────────
+    // VixSrc:    noProxy (browser-direct) — HF IP irrelevant for playback
+    // AutoEmbed: clean JSON API, no CDN IP-signing
+    // VidZee:    AES-CBC decrypt, rapidairmax/serversicuro CDN (not HF-blocked)
+    // 2Embed:    public embed, non-IP-signed CDN
+    // EmbedSu:   base64 JW Player config, non-IP-signed CDN
+    // NOTE: VaPlayer EXCLUDED — its CDN (nextgenmarketinghub.site /
+    //       brightpathsignals.com) routinely IP-blocks Hugging Face Space IPs.
+    console.log('[Resolver] Stage 1A: Racing (VixSrc, AutoEmbed, VidZee, 2Embed, EmbedSu)...');
     const stage1A = [
         () => scrapeVixSrc(tmdbId, type, season, episode),
-        () => scrapeVidSrcRu(tmdbId, type, season, episode),
-        () => extractVaPlayer({ tmdbId, type, season, episode }),
+        () => scrapeAutoEmbed(tmdbId, type, season, episode),
+        () => scrapeVidZee(tmdbId, type, season, episode),
+        () => scrape2Embed(tmdbId, type, season, episode),
+        () => scrapeEmbedSu(tmdbId, type, season, episode),
     ];
     const winner1A = await raceExtractors(stage1A, 14000);
     if (winner1A) {
@@ -97,12 +107,13 @@ export async function resolveStreaming(tmdbId, type, season, episode, title, yea
         return mergeSubtitles(winner1A);
     }
 
-    // ── Stage 1B: VidSrc cluster (cloudnestra path + RC4 handshakes) ─────────
-    console.log('[Resolver] Stage 1B: Racing VidSrc cluster (xyz, to, me)...');
+    // ── Stage 1B: VidSrc cluster (auth-based, different CDN paths) ───────────
+    console.log('[Resolver] Stage 1B: Racing VidSrc cluster (to, me, ru, xyz)...');
     const stage1B = [
-        () => scrapeVidSrcXyz(tmdbId, type, season, episode),
         () => scrapeVidSrcTo(tmdbId, type, season, episode),
         () => scrapeVidSrcMe(tmdbId, type, season, episode),
+        () => scrapeVidSrcRu(tmdbId, type, season, episode),
+        () => scrapeVidSrcXyz(tmdbId, type, season, episode),
     ];
     const winner1B = await raceExtractors(stage1B, 25000);
     if (winner1B) {
@@ -110,12 +121,11 @@ export async function resolveStreaming(tmdbId, type, season, episode, title, yea
         return mergeSubtitles(winner1B);
     }
 
-    // ── Stage 1C: Other embed scrapers ───────────────────────────────────────
-    console.log('[Resolver] Stage 1C: Racing embed scrapers (MoviesAPI, SuperEmbed, VidZee)...');
+    // ── Stage 1C: Embed scrapers ──────────────────────────────────────────────
+    console.log('[Resolver] Stage 1C: Racing embed scrapers (MoviesAPI, SuperEmbed)...');
     const stage1C = [
         () => scrapeMoviesApi(tmdbId, type, season, episode),
         () => scrapeSuperEmbed(tmdbId, type, season, episode),
-        () => scrapeVidZee(tmdbId, type, season, episode),
     ];
     const winner1C = await raceExtractors(stage1C, 20000);
     if (winner1C) {
@@ -123,14 +133,26 @@ export async function resolveStreaming(tmdbId, type, season, episode, title, yea
         return mergeSubtitles(winner1C);
     }
 
-    // ── Stage 2: Last-resort embed-only ──────────────────────────────────────
-    console.log('[Resolver] Stage 2: Falling back to embed-only sources (PrimeSrc)...');
+    // ── Stage 2: VaPlayer (HF IP may be blocked on CDN, try anyway) ──────────
+    // Its brightpathsignals.com CDN frequently bans HF Space IPs, but
+    // occasionally rotates and unblocks. Worth trying as a last real source.
+    console.log('[Resolver] Stage 2: Trying VaPlayer (CDN may be HF-blocked)...');
     try {
-        const stage2Result = await scrapePrimeSrc(tmdbId, type, season, episode);
-        if (stage2Result?.success && stage2Result.sources?.length) {
-            console.log(`[Resolver] ⚠️ Stage 2 Embed Fallback: ${stage2Result.provider}`);
-            stage2Result.isEmbedFallback = true;
-            return stage2Result;
+        const vaResult = await extractVaPlayer({ tmdbId, type, season, episode });
+        if (vaResult?.success && vaResult.sources?.length) {
+            console.log(`[Resolver] ⚠️ Stage 2 VaPlayer (CDN may fail in browser): ${vaResult.provider}`);
+            return mergeSubtitles(vaResult);
+        }
+    } catch (e) { /* ignore */ }
+
+    // ── Stage 3: Last-resort embed-only ──────────────────────────────────────
+    console.log('[Resolver] Stage 3: Falling back to embed-only sources (PrimeSrc)...');
+    try {
+        const stage3Result = await scrapePrimeSrc(tmdbId, type, season, episode);
+        if (stage3Result?.success && stage3Result.sources?.length) {
+            console.log(`[Resolver] ⚠️ Stage 3 Embed Fallback: ${stage3Result.provider}`);
+            stage3Result.isEmbedFallback = true;
+            return stage3Result;
         }
     } catch (e) { /* ignore */ }
 
