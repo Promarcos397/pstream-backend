@@ -207,6 +207,36 @@ app.get('/api/ping', (req, res) => {
     res.json({ ok: true, t: Date.now() });
 });
 
+// --- ROUTE: PROVIDER DEBUG (test each Stage 1A provider individually) ---
+app.get('/api/debug-providers', async (req, res) => {
+    const { tmdbId = '637', type = 'movie', season = '1', episode = '1' } = req.query;
+    const { scrapeAutoEmbed } = await import('./extractors/autoembed.js');
+    const { scrapeVidZee } = await import('./extractors/vidzee.js');
+    const { scrape2Embed } = await import('./extractors/twoembed.js');
+    const { scrapeMoviesApi } = await import('./extractors/moviesapi.js');
+    const { scrapeVidSrcTo } = await import('./extractors/vidsrcto.js');
+
+    const test = async (name, fn) => {
+        const start = Date.now();
+        try {
+            const result = await Promise.race([fn(), new Promise((_, r) => setTimeout(() => r(new Error('TIMEOUT')), 12000))]);
+            return { name, ok: !!result?.success, provider: result?.provider, sources: result?.sources?.length || 0, ms: Date.now() - start };
+        } catch (e) {
+            return { name, ok: false, error: e.message, ms: Date.now() - start };
+        }
+    };
+
+    const results = await Promise.all([
+        test('AutoEmbed', () => scrapeAutoEmbed(tmdbId, type, season, episode)),
+        test('VidZee', () => scrapeVidZee(tmdbId, type, season, episode)),
+        test('2Embed', () => scrape2Embed(tmdbId, type, season, episode)),
+        test('MoviesAPI', () => scrapeMoviesApi(tmdbId, type, season, episode)),
+        test('VidSrc.to', () => scrapeVidSrcTo(tmdbId, type, season, episode)),
+    ]);
+
+    res.json({ tmdbId, type, results });
+});
+
 // --- ROUTE: HEALTH CHECK ---
 
 app.get('/healthcheck', async (req, res) => {
