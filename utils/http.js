@@ -5,23 +5,20 @@ import { CookieJar } from 'tough-cookie';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { getRandomUA } from './constants.js';
 
-// Browser-like TLS Agent (To bypass Cloudflare Bot Fight Mode)
+// Browser-like TLS cipher suite (bypasses Cloudflare Bot Fight Mode TLS fingerprinting)
 const chromeCiphers = 'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384';
 
 const globalCookieJar = new CookieJar();
 const proxyUrl = process.env.RESIDENTIAL_PROXY_URL;
 
-// Combine HttpsProxyAgent and HttpsCookieAgent
 const ProxyCookieAgent = proxyUrl ? createCookieAgent(HttpsProxyAgent) : null;
 let proxyAgent;
 
 if (proxyUrl) {
     try {
         const pUrl = new URL(proxyUrl);
-        
-        // MASKED LOGGING: For verification WITHOUT leaking credentials
         const masked = `${pUrl.protocol}//${pUrl.username ? '****:****@' : ''}${pUrl.host}`;
-        console.log(`[HTTP] Initializing Residential Proxy: ${masked}`);
+        console.log(`[HTTP] Initializing Residential Proxy (Tier-1): ${masked}`);
 
         const proxyOptions = {
             host: pUrl.hostname,
@@ -29,83 +26,115 @@ if (proxyUrl) {
             cookies: { jar: globalCookieJar },
             ciphers: chromeCiphers,
             minVersion: 'TLSv1.2',
-            honorCipherOrder: true
+            honorCipherOrder: true,
         };
-        
-        // Robust Auth: Prefer URL credentials, fallback to explicit auth object if missing
         if (pUrl.username && pUrl.password) {
             proxyOptions.auth = `${decodeURIComponent(pUrl.username)}:${decodeURIComponent(pUrl.password)}`;
         }
-        
-        // We use the constructor directly with the CLEAN options object
-        // This avoids double-auth bugs caused by passing BOTH a string and an auth object.
         proxyAgent = new ProxyCookieAgent(proxyUrl, proxyOptions);
-        
     } catch (e) {
-        console.error('[HTTP] Failed to parse RESIDENTIAL_PROXY_URL. Check your .env format!', e.message);
+        console.error('[HTTP] Failed to parse RESIDENTIAL_PROXY_URL:', e.message);
     }
 }
 
-export const browserHttpsAgent = new HttpsCookieAgent({ 
+export const browserHttpsAgent = new HttpsCookieAgent({
     cookies: { jar: globalCookieJar },
-    ciphers: chromeCiphers, 
-    minVersion: 'TLSv1.2', 
-    honorCipherOrder: true 
+    ciphers: chromeCiphers,
+    minVersion: 'TLSv1.2',
+    honorCipherOrder: true,
 });
 
-// THE GIGA AGENT: Used by all scrapers and the playback proxy
+// Shared browser-like headers for all axios instances
+export const BROWSER_HEADERS = {
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Cache-Control': 'no-cache',
+    'Pragma': 'no-cache',
+    'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+    'Sec-Ch-Ua-Mobile': '?0',
+    'Sec-Ch-Ua-Platform': '"Windows"',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'none',
+    'Sec-Fetch-User': '?1',
+    'Upgrade-Insecure-Requests': '1',
+};
+
+// THE GIGA AGENT: Direct HF IP, browser TLS fingerprint, browser headers.
+// Used for providers whose CDNs don't block datacenter IPs.
 export const gigaAxios = axios.create({
     withCredentials: true,
-    proxy: false, // We handle proxy manually via httpsAgent if needed
+    proxy: false,
     httpsAgent: browserHttpsAgent,
     timeout: 10000,
     headers: {
         'User-Agent': getRandomUA(),
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache',
-        'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-        'Sec-Ch-Ua-Mobile': '?0',
-        'Sec-Ch-Ua-Platform': '"Windows"',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'none',
-        'Sec-Fetch-User': '?1',
-        'Upgrade-Insecure-Requests': '1',
-    }
+        ...BROWSER_HEADERS,
+    },
 });
 
-// Agent with residential proxy fallback (for extractors that are IP-banned on HF)
+// ─── ScraperAPI (Tier-2 Proxy) ────────────────────────────────────────────────
+// Problem: IPRoyal (geo.iproyal.com) blocks HF datacenter IPs from using their
+// residential network → returns 407 from HF but works fine from home IPs.
+// Solution: ScraperAPI accepts connections from datacenter IPs and routes through
+// their own residential proxy pool. Free tier: 1000 req/month @ scraperapi.com
+//
+// To enable: add SCRAPER_API_KEY to HF Space secrets
+const SCRAPER_API_KEY = process.env.SCRAPER_API_KEY || '';
+
+// Convenience wrapper for one-shot ScraperAPI fetches from extractors
+export async function scraperApiFetch(targetUrl, extraOptions = {}) {
+    if (!SCRAPER_API_KEY) throw new Error('[ScraperAPI] SCRAPER_API_KEY not set');
+    const apiUrl = `https://api.scraperapi.com/?api_key=${SCRAPER_API_KEY}&url=${encodeURIComponent(targetUrl)}&render=false`;
+    const { data } = await gigaAxios.get(apiUrl, { timeout: 22000, ...extraOptions });
+    return data;
+}
+
+// ─── proxyAxios: 3-Tier Fallback Chain ───────────────────────────────────────
+// Tier 1 → IPRoyal residential proxy (best — genuine residential IPs, low block rate)
+// Tier 2 → ScraperAPI residential pool (works from datacenter IPs, free tier available)
+// Tier 3 → HF bare IP with browser TLS fingerprint (last resort — CDNs may 403)
 export const proxyAxios = axios.create({
     withCredentials: true,
     httpsAgent: proxyAgent || browserHttpsAgent,
-    timeout: 15000
+    timeout: 15000,
 });
 
-// RESILIENCE LAYER: Automatic Proxy-to-Direct Failover
-// If the residential proxy account dies (407) or is throttled (429/503),
-// we fall back to the Hugging Face server IP (browserHttpsAgent) to keep the app alive.
 proxyAxios.interceptors.response.use(
     response => response,
     async error => {
         const config = error.config;
-        // Don't retry if we've already retried or it's not a proxy-related error
-        if (!config || config._isRetry || !proxyAgent) {
-            return Promise.reject(error);
-        }
+        if (!config || config._isRetry) return Promise.reject(error);
 
         const status = error.response?.status;
-        // 407 = Auth failure, 429 = Throttled, 503 = Proxy Overloaded
-        if (status === 407 || status === 429 || status === 503 || error.message.includes('Proxy-Authorization')) {
-            console.warn(`[HTTP] Proxy Failure (${status || error.message}). Falling back to Direct IP...`);
-            config._isRetry = true;
-            config.httpsAgent = browserHttpsAgent; // Switch to direct agent
-            config.proxy = false;
-            return axios(config); // Retry with standard axios logic using the new agent
+        const isProxyIssue = status === 407 || status === 429 || status === 503
+            || error.code === 'ECONNREFUSED'
+            || (error.message || '').includes('407');
+
+        if (!isProxyIssue) return Promise.reject(error);
+
+        config._isRetry = true;
+
+        // ── Tier 2: ScraperAPI ───────────────────────────────────────────────
+        if (SCRAPER_API_KEY) {
+            console.warn(`[HTTP] Proxy Failure (${status || error.code}). Trying ScraperAPI (tier-2)...`);
+            try {
+                const scraperUrl = `https://api.scraperapi.com/?api_key=${SCRAPER_API_KEY}&url=${encodeURIComponent(config.url)}&render=false`;
+                return await gigaAxios.get(scraperUrl, {
+                    responseType: config.responseType,
+                    timeout: 22000,
+                });
+            } catch (scraperErr) {
+                console.warn(`[HTTP] ScraperAPI failed: ${scraperErr.message}. Falling to HF bare IP (tier-3)...`);
+            }
+        } else {
+            console.warn(`[HTTP] Proxy Failure (${status || error.code}). No ScraperAPI key → bare HF IP (tier-3).`);
         }
 
-        return Promise.reject(error);
+        // ── Tier 3: HF bare IP ───────────────────────────────────────────────
+        config.httpsAgent = browserHttpsAgent;
+        config.proxy = false;
+        return axios(config);
     }
 );
 
