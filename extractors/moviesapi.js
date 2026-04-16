@@ -7,7 +7,7 @@
  * flixcdn.cyou/#hash format: we need to follow the redirect or decode it.
  * Fallback: try vidsrc.xyz embed which moviesapi uses internally.
  */
-import { gigaAxios, proxyAxios } from '../utils/http.js';
+import { gigaAxios } from '../utils/http.js';
 
 const API_BASE = 'https://ww2.moviesapi.to';
 const HEADERS = {
@@ -23,7 +23,7 @@ async function resolveVideoUrl(videoUrl) {
         // flixcdn.cyou/#hash — fetch the page and look for the actual stream
         if (videoUrl.includes('flixcdn') || videoUrl.includes('#')) {
             const cleanUrl = videoUrl.split('#')[0] + (videoUrl.includes('#') ? '#' + videoUrl.split('#')[1] : '');
-            const { data: html } = await proxyAxios.get(cleanUrl, {
+            const { data: html } = await gigaAxios.get(cleanUrl, {
                 headers: { ...HEADERS, Accept: 'text/html' },
                 timeout: 8000
             });

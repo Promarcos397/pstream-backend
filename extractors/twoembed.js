@@ -10,7 +10,7 @@
  *
  * Confirmed active 2026-04.
  */
-import { proxyAxios } from '../utils/http.js';
+import { gigaAxios } from '../utils/http.js';
 import { USER_AGENTS } from '../utils/constants.js';
 
 const BASE = 'https://www.2embed.cc';
@@ -24,7 +24,7 @@ const HEADERS = {
 };
 
 async function fetchHtml(url, referer = BASE + '/') {
-    const { data } = await proxyAxios.get(url, {
+    const { data } = await gigaAxios.get(url, {
         headers: { ...HEADERS, Referer: referer },
         timeout: 12000,
     });

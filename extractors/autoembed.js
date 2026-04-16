@@ -11,7 +11,7 @@
  *
  * CDN: Not IP-signed. Server-proxied fetch works fine.
  */
-import { proxyAxios } from '../utils/http.js';
+import { gigaAxios } from '../utils/http.js';
 
 const BASE = 'https://autoembed.to';
 
@@ -31,7 +31,7 @@ export async function scrapeAutoEmbed(tmdbId, type, season, episode) {
         const apiUrl = `${BASE}/api/getVideoSource?type=${type === 'tv' ? 'tv' : 'movie'}&id=${idParam}`;
         console.log(`[AutoEmbed] Fetching: ${apiUrl}`);
 
-        const { data } = await proxyAxios.get(apiUrl, {
+        const { data } = await gigaAxios.get(apiUrl, {
             headers: HEADERS,
             timeout: 8000,
         });
