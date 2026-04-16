@@ -210,31 +210,60 @@ app.get('/api/ping', (req, res) => {
 // --- ROUTE: PROVIDER DEBUG (test each Stage 1A provider individually) ---
 app.get('/api/debug-providers', async (req, res) => {
     const { tmdbId = '637', type = 'movie', season = '1', episode = '1' } = req.query;
-    const { scrapeAutoEmbed } = await import('./extractors/autoembed.js');
-    const { scrapeVidZee } = await import('./extractors/vidzee.js');
-    const { scrape2Embed } = await import('./extractors/twoembed.js');
-    const { scrapeMoviesApi } = await import('./extractors/moviesapi.js');
-    const { scrapeVidSrcTo } = await import('./extractors/vidsrcto.js');
 
+    // Import extractors
+    const [
+        { scrapeAutoEmbed },
+        { scrapeVidZee },
+        { scrape2Embed: scrape2EmbedFn },
+        { scrapeMoviesApi },
+        { scrapeVidSrcTo },
+    ] = await Promise.all([
+        import('./extractors/autoembed.js'),
+        import('./extractors/vidzee.js'),
+        import('./extractors/twoembed.js'),
+        import('./extractors/moviesapi.js'),
+        import('./extractors/vidsrcto.js'),
+    ]);
+
+    // Wrap each extractor to catch and expose errors (normally they silently return null)
     const test = async (name, fn) => {
         const start = Date.now();
+        let lastError = null;
+        // Temporarily intercept console.warn to capture error messages
+        const warns = [];
+        const origWarn = console.warn;
+        console.warn = (...args) => { warns.push(args.join(' ')); origWarn(...args); };
         try {
-            const result = await Promise.race([fn(), new Promise((_, r) => setTimeout(() => r(new Error('TIMEOUT')), 12000))]);
-            return { name, ok: !!result?.success, provider: result?.provider, sources: result?.sources?.length || 0, ms: Date.now() - start };
+            const result = await Promise.race([
+                fn(),
+                new Promise((_, r) => setTimeout(() => r(new Error('TIMEOUT_12s')), 12000))
+            ]);
+            console.warn = origWarn;
+            return {
+                name,
+                ok: !!result?.success,
+                provider: result?.provider,
+                sources: result?.sources?.length || 0,
+                ms: Date.now() - start,
+                warns: warns.slice(-3), // last 3 warnings
+            };
         } catch (e) {
-            return { name, ok: false, error: e.message, ms: Date.now() - start };
+            console.warn = origWarn;
+            lastError = e.message;
+            return { name, ok: false, error: lastError, warns: warns.slice(-3), ms: Date.now() - start };
         }
     };
 
-    const results = await Promise.all([
+    const results = await Promise.allSettled([
         test('AutoEmbed', () => scrapeAutoEmbed(tmdbId, type, season, episode)),
-        test('VidZee', () => scrapeVidZee(tmdbId, type, season, episode)),
-        test('2Embed', () => scrape2Embed(tmdbId, type, season, episode)),
+        test('VidZee',    () => scrapeVidZee(tmdbId, type, season, episode)),
+        test('2Embed',    () => scrape2EmbedFn(tmdbId, type, season, episode)),
         test('MoviesAPI', () => scrapeMoviesApi(tmdbId, type, season, episode)),
         test('VidSrc.to', () => scrapeVidSrcTo(tmdbId, type, season, episode)),
     ]);
 
-    res.json({ tmdbId, type, results });
+    res.json({ tmdbId, type, results: results.map(r => r.value || { error: r.reason?.message }) });
 });
 
 // --- ROUTE: HEALTH CHECK ---
