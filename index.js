@@ -13,6 +13,7 @@ import { USER_AGENTS, getRandomUA } from './utils/constants.js';
 import Redis from 'ioredis';
 import { recordProviderError, recordProviderSuccess, getAllProviderHealth } from './services/providerHealth.js';
 dotenv.config();
+// BUILD: 2026-04-16T05:00Z — Resolver v14 (VixSrc→Stage2, AutoEmbed→autoembed.to, EmbedSu removed)
 
 import { gigaAxios, proxyAxios, browserHttpsAgent } from './utils/http.js';
 
