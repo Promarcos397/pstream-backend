@@ -13,9 +13,12 @@ import crypto from 'crypto';
 const BASE_URL = 'https://player.vidzee.wtf';
 const KEY_API  = 'https://core.vidzee.wtf/api-key';
 
-// Hardcoded AES-GCM secret used to decrypt the key from /api-key endpoint
-// Found in: /_next/static/chunks/app/embed/[[...params]]/page-618b5896cc60ec61.js
-const GCM_SECRET_HEX = '4f2a9c7d1e8b3a6f0d5c2e9a7b1f4d8c';
+// AES-GCM secret to decrypt the rotating key from /api-key endpoint.
+// Algorithm (from vidzee source, confirmed via browser DevTools):
+//   key = SHA-256( UTF8(secret_string) )   ← NOT raw hex bytes, SHA-256 hash of the string
+//   buffer layout: IV[0:12] | authTag[12:28] | ciphertext[28:]
+//   Node.js: decipher.setAuthTag(authTag), then update(ciphertext)
+const GCM_SECRET = '4f2a9c7d1e8b3a6f0d5c2e9a7b1f4d8c';
 
 const HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -25,7 +28,7 @@ const HEADERS = {
     Origin: BASE_URL,
 };
 
-// Cache the derived key for the session (rotates rarely)
+// Cache the derived key for the session (rotates daily at most)
 let _cachedDecryptKey = null;
 let _cacheExpiry = 0;
 
@@ -34,29 +37,29 @@ async function getDerivedKey() {
     if (_cachedDecryptKey && now < _cacheExpiry) return _cachedDecryptKey;
 
     try {
-        // Fetch encrypted API key
         const { data: encKeyB64 } = await gigaAxios.get(KEY_API, { headers: HEADERS, timeout: 6000 });
-        const encKeyBuf = Buffer.from(encKeyB64.trim(), 'base64');
+        const buf = Buffer.from(encKeyB64.trim(), 'base64');
 
-        // AES-GCM decrypt: first 12 bytes = IV, last 16 bytes = auth tag, middle = ciphertext
-        const gcmKey = Buffer.from(GCM_SECRET_HEX, 'hex');
-        const iv = encKeyBuf.slice(0, 12);
-        const tag = encKeyBuf.slice(-16);
-        const ct = encKeyBuf.slice(12, -16);
+        // Buffer layout: IV (12) | authTag (16) | ciphertext (rest)
+        const iv         = buf.slice(0, 12);
+        const authTag    = buf.slice(12, 28);   // 16 bytes
+        const ciphertext = buf.slice(28);
 
-        const decipher = crypto.createDecipheriv('aes-128-gcm', gcmKey, iv);
-        decipher.setAuthTag(tag);
-        let dec = decipher.update(ct, undefined, 'utf8');
+        // Key = SHA-256 of the secret string (matches WebCrypto subtle.digest("SHA-256", encode(em)))
+        const gcmKey = crypto.createHash('sha256').update(Buffer.from(GCM_SECRET, 'utf8')).digest();
+
+        const decipher = crypto.createDecipheriv('aes-256-gcm', gcmKey, iv);
+        decipher.setAuthTag(authTag);
+        let dec = decipher.update(ciphertext, undefined, 'utf8');
         dec += decipher.final('utf8');
 
         _cachedDecryptKey = dec.trim();
-        _cacheExpiry = now + 30 * 60 * 1000; // cache for 30 min
-        console.log(`[VidZee] Key derived successfully (${_cachedDecryptKey.length} chars)`);
+        _cacheExpiry = now + 60 * 60 * 1000; // cache 1 hour
+        console.log(`[VidZee] ✅ Dynamic key fetched (${_cachedDecryptKey.length} chars)`);
         return _cachedDecryptKey;
     } catch (e) {
-        // Fallback to hardcoded known key — update when VidZee rotates
-        console.warn(`[VidZee] Key fetch failed (${e.message}), using fallback key`);
-        return 'pleasedontscrapemesaywallahi';
+        console.warn(`[VidZee] Key fetch failed (${e.message}) — using hardcoded fallback`);
+        return 'pleasedontscrapemesaywallahi'; // last known good key
     }
 }
 
