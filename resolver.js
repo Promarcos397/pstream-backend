@@ -90,36 +90,36 @@ export async function resolveStreaming(tmdbId, type, season, episode, title, yea
         return result;
     };
 
-    // ── Stage 1A: Fastest HF-proxy-compatible providers ─────────────────────
-    // These providers have CDNs that do NOT IP-ban the HF Space server.
-    // VixSrc is EXCLUDED: its CDN IP-bans the HF server regardless of Referer.
-    //   (Token is bound to the scraper's outbound IP at token issuance time)
-    // AutoEmbed: autoembed.to (new domain — tom.autoembed.cc is dead)
-    // VidZee: rapidairmax/serversicuro CDN (not HF-blocked, confirmed working)
-    // 2Embed: iframe player with M3U8 in JS config (CDN not IP-signed)
-    // MoviesAPI: ww2.moviesapi.to → flixcdn (consistent, fast)
-    console.log('[Resolver] Stage 1A: Racing (AutoEmbed, VidZee, 2Embed, MoviesAPI)...');
+    // ── Stage 1A: gigaAxios providers (work from bare HF IP, no residential proxy needed) ─
+    // Proxy account expired (407) — switched all Stage 1A extractors to gigaAxios (TLS fingerprint).
+    // These providers return 200 from cloud IPs and their CDNs are NOT IP-signed:
+    //   SuperEmbed: multiembed.mov — confirmed stream from bare IP (2026-04-16)
+    //   VidZee: player.vidzee.wtf — AES-CBC decrypt, CDN not IP-signed
+    //   2Embed: www.2embed.cc — iframe → player HTML scrape
+    //   MoviesAPI: ww2.moviesapi.to → flixcdn (JSON API, bare IP ok)
+    //   AutoEmbed: autoembed.to — bot-detected but gigaAxios TLS fingerprint may bypass
+    console.log('[Resolver] Stage 1A: Racing (SuperEmbed, VidZee, AutoEmbed, MoviesAPI, 2Embed)...');
     const stage1A = [
-        () => scrapeAutoEmbed(tmdbId, type, season, episode),
+        () => scrapeSuperEmbed(tmdbId, type, season, episode),
         () => scrapeVidZee(tmdbId, type, season, episode),
-        () => scrape2Embed(tmdbId, type, season, episode),
+        () => scrapeAutoEmbed(tmdbId, type, season, episode),
         () => scrapeMoviesApi(tmdbId, type, season, episode),
+        () => scrape2Embed(tmdbId, type, season, episode),
     ];
-    const winner1A = await raceExtractors(stage1A, 14000);
+    const winner1A = await raceExtractors(stage1A, 15000);
     if (winner1A) {
         console.log(`[Resolver] ✅ Stage 1A Winner: ${winner1A.provider}`);
         return mergeSubtitles(winner1A);
     }
 
-    // ── Stage 1B: Auth-chain scrapers + VidLink ───────────────────────────────
-    console.log('[Resolver] Stage 1B: Racing VidSrc cluster + VidLink + SuperEmbed...');
+    // ── Stage 1B: Auth-chain scrapers (need proxy — may 407 if proxy expired) ─────────────
+    console.log('[Resolver] Stage 1B: Racing VidSrc cluster + VidLink...');
     const stage1B = [
         () => scrapeVidSrcTo(tmdbId, type, season, episode),
         () => scrapeVidSrcMe(tmdbId, type, season, episode),
         () => scrapeVidSrcRu(tmdbId, type, season, episode),
         () => scrapeVidSrcXyz(tmdbId, type, season, episode),
         () => scrapeVidLink(tmdbId, type, season, episode),
-        () => scrapeSuperEmbed(tmdbId, type, season, episode),
     ];
     const winner1B = await raceExtractors(stage1B, 25000);
     if (winner1B) {

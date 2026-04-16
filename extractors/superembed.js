@@ -4,7 +4,7 @@
  * Does NOT require auth or keys. No IP-locking on CDN.
  * Confirmed active 2025-2026.
  */
-import { gigaAxios, proxyAxios } from '../utils/http.js';
+import { gigaAxios } from '../utils/http.js';
 
 const BASE_URL = 'https://multiembed.mov';
 const PLAYER_API = 'https://multiembed.mov/directstream.php';
@@ -26,7 +26,7 @@ export async function scrapeSuperEmbed(tmdbId, type, season, episode) {
         const embedUrl = `${BASE_URL}/?${params}`;
         console.log(`[SuperEmbed] Fetching embed page...`);
 
-        const { data: html } = await proxyAxios.get(embedUrl, { headers: HEADERS, timeout: 12000 });
+        const { data: html } = await gigaAxios.get(embedUrl, { headers: HEADERS, timeout: 12000 });
 
         // Extract iframe or direct player URL
         const iframeMatch = html.match(/src=["']([^"']*(?:streamtape|dood|vidhide|streamwish|filemoon|filelion)[^"']*)["']/i)
@@ -54,7 +54,7 @@ export async function scrapeSuperEmbed(tmdbId, type, season, episode) {
         console.log(`[SuperEmbed] Resolving player: ${playerUrl.substring(0, 60)}...`);
 
         // Fetch the player page
-        const { data: playerHtml } = await proxyAxios.get(playerUrl, { 
+        const { data: playerHtml } = await gigaAxios.get(playerUrl, { 
             headers: { ...HEADERS, Referer: embedUrl },
             timeout: 10000 
         });
