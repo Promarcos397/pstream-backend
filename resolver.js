@@ -1,29 +1,36 @@
 /**
- * P-Stream Giga Engine Resolver v14.0.0
- * "Provider Audit — Dead Domain Recovery"
+ * P-Stream Giga Engine Resolver v14.2.0
+ * "Bare-IP Hardening + Bandwidth Optimization"
  *
- * Provider Status (2026-04-15 — live-verified):
+ * Provider Status (2026-04-17 — live-verified from HF datacenter IP):
  *
- * ✅ AutoEmbed  (autoembed.to)       — JSON API, CDN not IP-signed       ~1-2s
- * ✅ VidZee     (vidzee.wtf)         — AES-CBC decrypt, multi-CDN        ~2-3s
- * ✅ 2Embed     (2embed.cc)          — HTML scrape, iframe player         ~3-5s
- * ✅ VidLink    (vidlink.pro)        — 2-step enc-id + JSON API           ~3-5s
- * ✅ MoviesAPI  (moviesapi.to)       — JSON API → flixcdn               ~2-4s
- * ✅ SuperEmbed (multiembed.mov)     — Public embed page → M3U8          ~2-4s
- * ✅ VidSrc.to  (vidsrc.to)         — RC4 decrypt                       ~4-6s
- * ✅ VidSrc.me  (vidsrc.me)         — Hash XOR                          ~3-5s
- * ✅ VidSrc.ru  (vsembed.ru)        — 3-hop                             ~5-8s
- * ✅ VidSrc.xyz (vidsrc.xyz)        — cloudnestra RCP                   ~4-6s
- * ⚠️  VixSrc   (vixsrc.to)         — DEMOTED: IP-bans HF for playback
- *                                     (token tied to scraper IP, not browser)
- * ❌ EmbedSu   (embed.su)           — DEAD: DNS gone as of 2026-04-15
- * ❌ AutoEmbed  (tom.autoembed.cc)  — DEAD: DNS gone as of 2026-04-15
- * ⚠️  VaPlayer  (brightpathsignals) — HF IP-banned CDN (last resort try)
+ * ✅ VidZee     (player.vidzee.wtf)  — AES-GCM key fetch + AES-CBC decrypt
+ *                                      CDN (cdn.1shows.app) NOT IP-signed
+ *                                      → segments stream DIRECT to browser  ~1.8s
+ * ⚠️  SuperEmbed (multiembed.mov)    — intermittent, worth trying           ~2-4s
+ * ✅ VidSrc.to  (vidsrc.to)         — RC4 decrypt (needs proxy)            ~4-6s
+ * ✅ VidSrc.me  (vidsrc.me)         — Hash XOR (needs proxy)               ~3-5s
+ * ✅ VidSrc.ru  (vsembed.ru)        — 3-hop (needs proxy)                  ~5-8s
+ * ✅ VidSrc.xyz (vidsrc.xyz)        — cloudnestra RCP (needs proxy)        ~4-6s
+ * ⚠️  VidLink   (vidlink.pro)        — 2-step enc-id, token IP-bound        ~3-5s
+ * ⚠️  VixSrc    (vixsrc.to)         — token valid but CDN blocks HF IP range
+ * ⚠️  VaPlayer  (brightpathsignals) — CDN IP-bans HF (last resort)
+ *
+ * REMOVED (permanently dead or unfixable):
+ * ❌ AutoEmbed (autoembed.to)     — New Relic JS execution gate (unfixable without headless browser)
+ * ❌ MoviesAPI (ww2.moviesapi.to) — Domain timed out, all mirrors dead
+ * ❌ 2Embed    (2embed.cc)        — Hard 403 from all datacenter IPs, all mirrors dead
+ * ❌ EmbedSu   (embed.su)         — DNS dead
+ *
+ * Bandwidth note:
+ * VidZee sources are marked noProxy=true — .ts segments go CDN→browser directly.
+ * Only use /proxy/stream for IP-locked providers (VixSrc, VidLink) where
+ * the token must match the fetching IP.
  *
  * Architecture:
- * - Stage 1A: Fast non-IP-blocked providers that work through HF proxy
- * - Stage 1B: Slower providers / auth-chain scrapers
- * - Stage 2:  VaPlayer + VixSrc (may work intermittently)
+ * - Stage 1A: Direct gigaAxios providers (bare HF IP ok, CDN not IP-locked)
+ * - Stage 1B: VidSrc cluster (needs proxy — uses 3-tier proxyAxios fallback)
+ * - Stage 2:  VixSrc + VaPlayer (IP-problematic, last resort)
  * - Stage 3:  PrimeSrc embed-only
  */
 
@@ -35,13 +42,10 @@ import { scrapeVidSrcMe }         from './extractors/vidsrcme.js';
 import { scrapeVidZee }           from './extractors/vidzee.js';
 import { scrapePrimeSrc }         from './extractors/primesrc.js';
 import { scrapeVdrkCaptions }     from './extractors/subs_vdrk.js';
-import { scrapeMoviesApi }        from './extractors/moviesapi.js';
 import { scrapeSuperEmbed }       from './extractors/superembed.js';
 import { scrapeVidSrcXyz }        from './extractors/vidsrcxyz.js';
-import { scrapeAutoEmbed }        from './extractors/autoembed.js';
-import { scrape2Embed }           from './extractors/twoembed.js';
 import { scrapeVidLink }          from './extractors/vidlink.js';
-// EmbedSu REMOVED: embed.su DNS is dead as of 2026-04-15
+// Removed: AutoEmbed (New Relic JS gate), MoviesAPI (domain dead), 2Embed (all mirrors 403), EmbedSu (DNS dead)
 
 /**
  * Race multiple extractors concurrently.
@@ -90,23 +94,27 @@ export async function resolveStreaming(tmdbId, type, season, episode, title, yea
         return result;
     };
 
-    // ── Stage 1A: gigaAxios providers (work from bare HF IP, no residential proxy needed) ─
-    // Proxy account expired (407) — switched all Stage 1A extractors to gigaAxios (TLS fingerprint).
-    // These providers return 200 from cloud IPs and their CDNs are NOT IP-signed:
-    //   SuperEmbed: multiembed.mov — confirmed stream from bare IP (2026-04-16)
-    //   VidZee: player.vidzee.wtf — AES-CBC decrypt, CDN not IP-signed
-    //   2Embed: www.2embed.cc — iframe → player HTML scrape
-    //   MoviesAPI: ww2.moviesapi.to → flixcdn (JSON API, bare IP ok)
-    //   AutoEmbed: autoembed.to — bot-detected but gigaAxios TLS fingerprint may bypass
-    console.log('[Resolver] Stage 1A: Racing (SuperEmbed, VidZee, AutoEmbed, MoviesAPI, 2Embed)...');
+    // ═══ Stage 1A: Direct providers (bare HF datacenter IP, CDN not IP-locked) ══════════════
+    // All providers here must satisfy:
+    //   1. API accessible from AWS/GCP/HF datacenter IPs (no Cloudflare IUAM, no New Relic)
+    //   2. CDN tokens NOT IP-bound (browser can play segments directly, no /proxy/stream needed)
+    //
+    // VidZee: ✅ Confirmed working — 6 sources, CDN is cdn.1shows.app (not IP-checked)
+    //   Sources marked noProxy=true → .ts segments go CDN→browser directly (saves backend bandwidth)
+    // SuperEmbed: ⚠️ intermittent — worth trying as fast parallel bet
+    console.log('[Resolver] Stage 1A: Racing (VidZee, SuperEmbed)...');
     const stage1A = [
+        async () => {
+            const r = await scrapeVidZee(tmdbId, type, season, episode);
+            // Mark VidZee sources as direct-play — CDN is not IP-locked,
+            // browser can fetch segments without routing through /proxy/stream.
+            // This eliminates backend egress for all VidZee video data.
+            if (r?.sources) r.sources = r.sources.map(s => ({ ...s, noProxy: true }));
+            return r;
+        },
         () => scrapeSuperEmbed(tmdbId, type, season, episode),
-        () => scrapeVidZee(tmdbId, type, season, episode),
-        () => scrapeAutoEmbed(tmdbId, type, season, episode),
-        () => scrapeMoviesApi(tmdbId, type, season, episode),
-        () => scrape2Embed(tmdbId, type, season, episode),
     ];
-    const winner1A = await raceExtractors(stage1A, 15000);
+    const winner1A = await raceExtractors(stage1A, 12000);
     if (winner1A) {
         console.log(`[Resolver] ✅ Stage 1A Winner: ${winner1A.provider}`);
         return mergeSubtitles(winner1A);

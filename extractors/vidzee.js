@@ -58,7 +58,18 @@ async function getDerivedKey() {
         console.log(`[VidZee] ✅ Dynamic key fetched (${_cachedDecryptKey.length} chars)`);
         return _cachedDecryptKey;
     } catch (e) {
-        console.warn(`[VidZee] Key fetch failed (${e.message}) — using hardcoded fallback`);
+        // ⚠️ ALERT: Dynamic key fetch failed — streaming may break if key has rotated.
+        // This needs manual investigation: check core.vidzee.wtf/api-key response
+        // and update the fallback key or the GCM_SECRET constant in this file.
+        console.error([
+            '',
+            '╔══════════════════════════════════════════════════════════╗',
+            '║  [VidZee] ⚠️  DYNAMIC KEY FETCH FAILED — USING FALLBACK  ║',
+            `║  Error: ${e.message.padEnd(52)}║`,
+            '║  If streams break: update GCM_SECRET or fallback key.    ║',
+            '╚══════════════════════════════════════════════════════════╝',
+            '',
+        ].join('\n'));
         return 'pleasedontscrapemesaywallahi'; // last known good key
     }
 }
