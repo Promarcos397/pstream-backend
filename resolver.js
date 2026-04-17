@@ -97,21 +97,16 @@ export async function resolveStreaming(tmdbId, type, season, episode, title, yea
     // ═══ Stage 1A: Direct providers (bare HF datacenter IP, CDN not IP-locked) ══════════════
     // All providers here must satisfy:
     //   1. API accessible from AWS/GCP/HF datacenter IPs (no Cloudflare IUAM, no New Relic)
-    //   2. CDN tokens NOT IP-bound (browser can play segments directly, no /proxy/stream needed)
+    //   2. CDN tokens NOT IP-bound (backend proxy can fetch without getting 403)
     //
-    // VidZee: ✅ Confirmed working — 6 sources, CDN is cdn.1shows.app (not IP-checked)
-    //   Sources marked noProxy=true → .ts segments go CDN→browser directly (saves backend bandwidth)
+    // VidZee: ✅ Confirmed working — 6 sources, CDN is NOT IP-locked (no token in URL)
+    //   ⚠️ CDN has NO CORS headers (zebi.xalaflix.design, i-arch-400.kessy412lad.com)
+    //   MUST go through /proxy/stream — backend adds Access-Control-Allow-Origin:*
+    //   noProxy:true was tried and reverted — browser CORS policy blocks direct fetch
     // SuperEmbed: ⚠️ intermittent — worth trying as fast parallel bet
     console.log('[Resolver] Stage 1A: Racing (VidZee, SuperEmbed)...');
     const stage1A = [
-        async () => {
-            const r = await scrapeVidZee(tmdbId, type, season, episode);
-            // Mark VidZee sources as direct-play — CDN is not IP-locked,
-            // browser can fetch segments without routing through /proxy/stream.
-            // This eliminates backend egress for all VidZee video data.
-            if (r?.sources) r.sources = r.sources.map(s => ({ ...s, noProxy: true }));
-            return r;
-        },
+        () => scrapeVidZee(tmdbId, type, season, episode),
         () => scrapeSuperEmbed(tmdbId, type, season, episode),
     ];
     const winner1A = await raceExtractors(stage1A, 12000);
@@ -119,6 +114,7 @@ export async function resolveStreaming(tmdbId, type, season, episode, title, yea
         console.log(`[Resolver] ✅ Stage 1A Winner: ${winner1A.provider}`);
         return mergeSubtitles(winner1A);
     }
+
 
     // ── Stage 1B: Auth-chain scrapers (need proxy — may 407 if proxy expired) ─────────────
     console.log('[Resolver] Stage 1B: Racing VidSrc cluster + VidLink...');
