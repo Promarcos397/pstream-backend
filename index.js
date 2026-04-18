@@ -30,7 +30,8 @@ if (process.env.REDIS_URL) {
 }
 export { redis };
 
-const JWT_SECRET = process.env.JWT_SECRET || 'Pstream-secret-token-key-v1';
+if (!process.env.JWT_SECRET) { console.error('[FATAL] JWT_SECRET env var is not set.'); process.exit(1); }
+const JWT_SECRET = process.env.JWT_SECRET;
 
 // CORS — whitelist only the frontend domain
 const ALLOWED_ORIGINS = [
