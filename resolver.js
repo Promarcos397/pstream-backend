@@ -45,6 +45,10 @@ import { scrapeVdrkCaptions }     from './extractors/subs_vdrk.js';
 import { scrapeSuperEmbed }       from './extractors/superembed.js';
 import { scrapeVidSrcXyz }        from './extractors/vidsrcxyz.js';
 import { scrapeVidLink }          from './extractors/vidlink.js';
+import { scrapeVidNest }          from './extractors/vidnest.js';
+import { scrapeNontonGo }         from './extractors/nontongo.js';
+import { scrapeLookMovie }        from './extractors/lookmovie.js';
+import { scrapeRidoMovies }       from './extractors/ridomovies.js';
 // Removed: AutoEmbed (New Relic JS gate), MoviesAPI (domain dead), 2Embed (all mirrors 403), EmbedSu (DNS dead)
 
 /**
@@ -104,10 +108,12 @@ export async function resolveStreaming(tmdbId, type, season, episode, title, yea
     //   MUST go through /proxy/stream — backend adds Access-Control-Allow-Origin:*
     //   noProxy:true was tried and reverted — browser CORS policy blocks direct fetch
     // SuperEmbed: ⚠️ intermittent — worth trying as fast parallel bet
-    console.log('[Resolver] Stage 1A: Racing (VidZee, SuperEmbed)...');
+    console.log('[Resolver] Stage 1A: Racing (VidZee, SuperEmbed, VidNest, NontonGo)...');
     const stage1A = [
         () => scrapeVidZee(tmdbId, type, season, episode),
         () => scrapeSuperEmbed(tmdbId, type, season, episode),
+        () => scrapeVidNest(tmdbId, type, season, episode),
+        () => scrapeNontonGo(tmdbId, type, season, episode),
     ];
     const winner1A = await raceExtractors(stage1A, 12000);
     if (winner1A) {
@@ -117,13 +123,15 @@ export async function resolveStreaming(tmdbId, type, season, episode, title, yea
 
 
     // ── Stage 1B: Auth-chain scrapers (need proxy — may 407 if proxy expired) ─────────────
-    console.log('[Resolver] Stage 1B: Racing VidSrc cluster + VidLink...');
+    console.log('[Resolver] Stage 1B: Racing VidSrc cluster + VidLink + LookMovie + RidoMovies...');
     const stage1B = [
         () => scrapeVidSrcTo(tmdbId, type, season, episode),
         () => scrapeVidSrcMe(tmdbId, type, season, episode),
         () => scrapeVidSrcRu(tmdbId, type, season, episode),
         () => scrapeVidSrcXyz(tmdbId, type, season, episode),
         () => scrapeVidLink(tmdbId, type, season, episode),
+        () => scrapeLookMovie(tmdbId, type === 'movie' ? 'movie' : 'show', season, episode, title, year),
+        () => scrapeRidoMovies(tmdbId, type === 'movie' ? 'movie' : 'show', season, episode, title, year),
     ];
     const winner1B = await raceExtractors(stage1B, 25000);
     if (winner1B) {
