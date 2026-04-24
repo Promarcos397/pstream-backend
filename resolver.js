@@ -55,56 +55,13 @@ import { scrapePrimeSrc }     from './extractors/primesrc.js';
 import { scrapeVdrkCaptions } from './extractors/subs_vdrk.js';
 
 /**
- * Probe a source URL to verify it's actually live before declaring it a winner.
- * Providers often return success=true with an M3U8 URL that 403s or 404s on the CDN.
- * A HEAD request (or GET with tiny range) quickly catches this.
- *
- * noProxy=true sources are served directly to the browser, so we can't probe them from
- * the server without hitting the same IP-lock. Skip those — the browser will discover
- * failure via HLS.js and trigger the retry path.
- *
- * Returns true if the URL looks live, false if definitively dead.
- */
-async function probeSource(result) {
-    // Skip probe for noProxy sources (browser plays them directly — server can't reach CDN)
-    const firstSource = result.sources?.[0];
-    if (!firstSource || firstSource.noProxy) return true;
-
-    const url = firstSource.url;
-    if (!url || !url.startsWith('http')) return true;
-
-    try {
-        const { gigaAxios } = await import('./utils/http.js');
-        const referer = firstSource.referer || new URL(url).origin + '/';
-
-        const probeRes = await gigaAxios.head(url, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                Referer: referer,
-                Origin: new URL(url).origin,
-            },
-            timeout: 5000,
-            validateStatus: () => true,   // don't throw on 4xx — just read status
-        });
-
-        const status = probeRes.status;
-        if (status === 403 || status === 404 || status === 410) {
-            console.warn(`[Probe] ❌ Dead URL (${status}): ${url.substring(0, 80)}`);
-            return false;
-        }
-        console.log(`[Probe] ✅ Live (${status}): ${url.substring(0, 80)}`);
-        return true;
-    } catch (e) {
-        // Network errors from probe are non-fatal — assume live (browser will discover otherwise)
-        console.warn(`[Probe] ⚠️ Probe failed (${e.message}) — assuming live`);
-        return true;
-    }
-}
-
-/**
  * Race multiple extractor functions.
- * Returns the first that resolves with real (non-embed) M3U8 sources
- * AND passes a lightweight CDN probe test.
+ * Returns the first that resolves with real (non-embed) M3U8 sources.
+ *
+ * NOTE: We intentionally do NOT probe the URL server-side — adding a HEAD
+ * request per provider would consume the race timeout budget (VidZee already
+ * takes 8-12s, Stage 1 timeout is 8s). Dead-URL detection is handled client-side:
+ * useHls.ts treats 404/403 as cache-bust + full backend refetch.
  */
 function raceExtractors(extractors, timeoutMs) {
     return new Promise(resolve => {
@@ -116,47 +73,39 @@ function raceExtractors(extractors, timeoutMs) {
 
         const timer = setTimeout(() => {
             if (!resolved) {
-                console.warn(`[Race] ⏱ Timeout after ${timeoutMs}ms — all ${total} extractors exhausted or slow`);
+                console.warn(`[Race] ⏱ Timeout after ${timeoutMs}ms — all ${total} extractors slow/failed`);
                 resolve(null);
             }
         }, timeoutMs);
 
-        const done = async (result, providerName) => {
-            if (resolved) return; // already won — don't race further
+        const done = (result, providerName) => {
+            if (resolved) return;
 
             if (result?.success && result.sources?.length && !result.sources.every(s => s.isEmbed)) {
-                // Probe the URL before declaring winner
-                const live = await probeSource(result);
-                if (live && !resolved) {
-                    resolved = true;
-                    clearTimeout(timer);
-                    console.log(`[Race] 🏆 Winner: ${result.provider || providerName}`);
-                    resolve(result);
-                    return;
-                }
-                if (!live) {
-                    console.warn(`[Race] 💀 ${result.provider || providerName} — URL dead, continuing...`);
-                }
-            } else {
-                console.log(`[Race] ✗ ${providerName || 'Unknown'} — no valid sources`);
-            }
-
-            settled++;
-            if (!resolved && settled === total) {
+                resolved = true;
                 clearTimeout(timer);
-                resolve(null);
+                console.log(`[Race] 🏆 Winner: ${result.provider || providerName}`);
+                resolve(result);
+            } else {
+                console.log(`[Race] ✗ ${result?.provider || providerName || 'Unknown'} — no valid sources`);
+                settled++;
+                if (!resolved && settled === total) {
+                    clearTimeout(timer);
+                    resolve(null);
+                }
             }
         };
 
         extractors.forEach((fn, i) => fn().then(
             result => done(result, `extractor[${i}]`),
             err => {
-                console.warn(`[Race] ✗ extractor[${i}] threw: ${err.message}`);
+                console.warn(`[Race] ✗ extractor[${i}] threw: ${err?.message || err}`);
                 done(null, `extractor[${i}]`);
             }
         ));
     });
 }
+
 
 
 export async function resolveStreaming(tmdbId, type, season, episode, title, year) {
@@ -174,43 +123,34 @@ export async function resolveStreaming(tmdbId, type, season, episode, title, yea
         return result;
     };
 
-    // ══ Stage 1: VidZee (fastest, most sources) ════════════════════════════
-    // VidZee: AES-GCM key API + AES-CBC URL decryption.
-    // CDN domains block HF IPs → noProxy=true (browser fetches directly).
-    // 3 movie sources / 5 TV sources typical. ~1.8s resolution time.
-    console.log('[Resolver] Stage 1: VidZee...');
+    // ══ Stage 1+2: Parallel race — all providers at once ═══════════════════
+    // ALL providers race simultaneously. VixSrc (2-3s) and VaPlayer (2-3s)
+    // typically win. VidZee (8-12s), VidSrc.ru (7-8s), LookMovie (7-8s) serve
+    // as fallbacks if the fast providers fail.
+    //
+    // Previously staged (VidZee first, then others) — this wasted 8s waiting
+    // for VidZee when VixSrc/VaPlayer could win in 2-3s.
+    //
+    // noProxy sources: VidSrc.ru (noProxy already in extractor), VixSrc (set below).
+    // VidZee CDN (neonhorizonworkshops etc) blocks HF IPs → noProxy=true in vidzee.js.
+    console.log('[Resolver] Racing all providers: VixSrc, VaPlayer, VidZee, VidSrc.ru, LookMovie...');
     const stage1Result = await raceExtractors([
+        () => scrapeVixSrc(tmdbId, type, season, episode),
+        () => extractVaPlayer({ tmdbId, type, season, episode }),
         () => scrapeVidZee(tmdbId, type, season, episode),
-    ], 8000);
+        () => scrapeVidSrcRu(tmdbId, type, season, episode),
+        () => scrapeLookMovie(tmdbId, type === 'movie' ? 'movie' : 'show', season, episode, title, year),
+    ], 20000);
 
     if (stage1Result) {
-        console.log(`[Resolver] ✅ Stage 1 Winner: ${stage1Result.provider}`);
+        // VixSrc token is IP-bound → mark for browser-direct fetch
+        if (stage1Result.provider?.includes('VixSrc') && stage1Result.sources) {
+            stage1Result.sources = stage1Result.sources.map(s => ({ ...s, noProxy: true }));
+        }
+        console.log(`[Resolver] ✅ Winner: ${stage1Result.provider}`);
         return mergeSubtitles(stage1Result);
     }
 
-    // ══ Stage 2: Parallel race — VidSrc.ru + VixSrc + VaPlayer + LookMovie ═
-    // All confirmed working from HF datacenter IPs.
-    // VixSrc (1-2.6s) and VaPlayer (2.4s) are fastest so usually win.
-    // VidSrc.ru (7.7s) and LookMovie (7.4s) are fallbacks.
-    // noProxy already set on VidSrc.ru sources.
-    // VixSrc gets noProxy=true below (token IP-bound — browser plays directly).
-    // VaPlayer CDN is not IP-locked, proxy works fine.
-    console.log('[Resolver] Stage 2: Racing VidSrc.ru, VixSrc, VaPlayer, LookMovie...');
-    const stage2Result = await raceExtractors([
-        () => scrapeVidSrcRu(tmdbId, type, season, episode),
-        () => scrapeVixSrc(tmdbId, type, season, episode),
-        () => extractVaPlayer({ tmdbId, type, season, episode }),
-        () => scrapeLookMovie(tmdbId, type === 'movie' ? 'movie' : 'show', season, episode, title, year),
-    ], 18000);
-
-    if (stage2Result) {
-        // VixSrc token is IP-bound → mark for browser-direct fetch
-        if (stage2Result.provider?.includes('VixSrc') && stage2Result.sources) {
-            stage2Result.sources = stage2Result.sources.map(s => ({ ...s, noProxy: true }));
-        }
-        console.log(`[Resolver] ✅ Stage 2 Winner: ${stage2Result.provider}`);
-        return mergeSubtitles(stage2Result);
-    }
 
     // ══ Stage 3: Embed-only fallback ═══════════════════════════════════════
     console.log('[Resolver] Stage 3: PrimeSrc embed fallback...');
