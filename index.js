@@ -1,4 +1,4 @@
-﻿import express from 'express';
+import express from 'express';
 import cors from 'cors';
 import { createProxyMiddleware } from 'http-proxy-middleware';
 import axios from 'axios';
@@ -451,8 +451,8 @@ app.get('/proxy/stream', async (req, res) => {
         try {
             const targetHost = new URL(targetUrl).hostname;
             if (CDN_BLOCKLIST.some(blocked => targetHost.endsWith(blocked))) {
-                console.warn([Proxy] Fast-fail: CDN block on +targetHost);
-                return res.status(403).json({ error: 'CDN_BLOCK', message: CDN blocks datacenter IPs - use noProxy=true });
+                console.warn(`[Proxy] Fast-fail: CDN block on ${targetHost}`);
+                return res.status(403).json({ error: 'CDN_BLOCK', message: 'CDN blocks datacenter IPs — use noProxy=true' });
             }
         } catch (_) {}
         // Detect M3U8 by URL pattern — includes /playlist/ (VixSrc), .m3u8, /manifest, etc.
