@@ -1,62 +1,65 @@
 /**
- * P-Stream Giga Engine Resolver v14.2.0
- * "Bare-IP Hardening + Bandwidth Optimization"
+ * P-Stream Giga Engine Resolver v16.0.0
+ * "Dead Provider Purge + Lean Architecture"
  *
- * Provider Status (2026-04-17 — live-verified from HF datacenter IP):
+ * ══ LIVE-VERIFIED STATUS (2026-04-24, HF datacenter IP) ══════════════════════
  *
- * ✅ VidZee     (player.vidzee.wtf)  — AES-GCM key fetch + AES-CBC decrypt
- *                                      CDN (cdn.1shows.app) NOT IP-signed
- *                                      → segments stream DIRECT to browser  ~1.8s
- * ⚠️  SuperEmbed (multiembed.mov)    — intermittent, worth trying           ~2-4s
- * ✅ VidSrc.to  (vidsrc.to)         — RC4 decrypt (needs proxy)            ~4-6s
- * ✅ VidSrc.me  (vidsrc.me)         — Hash XOR (needs proxy)               ~3-5s
- * ✅ VidSrc.ru  (vsembed.ru)        — 3-hop (needs proxy)                  ~5-8s
- * ✅ VidSrc.xyz (vidsrc.xyz)        — cloudnestra RCP (needs proxy)        ~4-6s
- * ⚠️  VidLink   (vidlink.pro)        — 2-step enc-id, token IP-bound        ~3-5s
- * ⚠️  VixSrc    (vixsrc.to)         — token valid but CDN blocks HF IP range
- * ⚠️  VaPlayer  (brightpathsignals) — CDN IP-bans HF (last resort)
+ * ✅ VidZee    (player.vidzee.wtf)  — 3-5 sources, AES-GCM/CBC decrypt
+ *                                     noProxy=true — CDN (neonhorizonworkshops,
+ *                                     wanderlynest, orchidpixelgardens) blocks
+ *                                     datacenter IPs. Browser fetches directly. ~1.8s
  *
- * REMOVED (permanently dead or unfixable):
- * ❌ AutoEmbed (autoembed.to)     — New Relic JS execution gate (unfixable without headless browser)
- * ❌ MoviesAPI (ww2.moviesapi.to) — Domain timed out, all mirrors dead
- * ❌ 2Embed    (2embed.cc)        — Hard 403 from all datacenter IPs, all mirrors dead
- * ❌ EmbedSu   (embed.su)         — DNS dead
+ * ✅ VidSrc.ru (vsembed.ru)        — 8 sources, cloudnestra CDN
+ *                                     noProxy=true already set.               ~7.7s
  *
- * Bandwidth note:
- * VidZee sources are marked noProxy=true — .ts segments go CDN→browser directly.
- * Only use /proxy/stream for IP-locked providers (VixSrc, VidLink) where
- * the token must match the fetching IP.
+ * ✅ VixSrc   (vixsrc.to)          — 1 source, token-based, very fast.
+ *                                     noProxy=true set in Stage 2.            ~1.2-2.6s
  *
- * Architecture:
- * - Stage 1A: Direct gigaAxios providers (bare HF IP ok, CDN not IP-locked)
- * - Stage 1B: VidSrc cluster (needs proxy — uses 3-tier proxyAxios fallback)
- * - Stage 2:  VixSrc + VaPlayer (IP-problematic, last resort)
- * - Stage 3:  PrimeSrc embed-only
+ * ✅ VaPlayer (vaplayer.ru)        — 4 sources, multiple mirrors.             ~2.4s
+ *
+ * ✅ LookMovie (lookmovie2.to)     — 1 source, compressed HLS.                ~7.4s
+ *
+ * ══ DEAD / REMOVED (2026-04-24 confirmed) ════════════════════════════════════
+ *
+ * ❌ VidSrc.to  — Now just wraps vsembed.ru (= VidSrc.ru). 100% redundant.
+ * ❌ VidSrc.me  — Full SPA (JS-only render), zero scrape-able data.
+ * ❌ VidSrc.xyz — Consistent timeout (12-13s), never resolves.
+ * ❌ VidLink    — HTTP 400 on all requests.
+ * ❌ FlixHQ     — HTTP 404 on TMDB API path.
+ * ❌ 2EmbedSkin — Wraps dead 2embed.cc. No stream.
+ * ❌ VidBinge   — SPA (JS-only). No scrape-able API.
+ * ❌ VidNest    — HTTP 403 blocking HF datacenter IPs.
+ * ❌ NontonGo   — Consistent timeout / connection refused.
+ * ❌ RidoMovies — Cloudflare JS challenge blocks server-side requests.
+ * ❌ SuperEmbed — multiembed.mov returns 678KB SPA, no extractable stream.
+ * ❌ AutoEmbed  — New Relic JS gate (requires real browser).
+ * ❌ MoviesAPI  — SPA (JS-only render).
+ * ❌ HollyMovieHD — HTTP 404.
+ *
+ * ══ ARCHITECTURE ══════════════════════════════════════════════════════════════
+ *
+ * Stage 1 (8s):  VidZee — fastest, most sources. Almost always wins.
+ * Stage 2 (18s): VidSrc.ru + VixSrc + VaPlayer + LookMovie — parallel race.
+ *                VixSrc/VaPlayer usually win in 1-2.4s.
+ * Stage 3:       PrimeSrc — embed-only last resort.
+ *
+ * External subs: vdrk fetched in parallel, merged into winner.
  */
 
-import { scrapeVixSrc }          from './extractors/vixsrc.js';
+import { scrapeVidZee }       from './extractors/vidzee.js';
 import { scrapeVidSrc as scrapeVidSrcRu } from './extractors/vidsrcru.js';
-import { extractVaPlayer }        from './extractors/vaplayer.js';
-import { scrapeVidSrcTo }         from './extractors/vidsrcto.js';
-import { scrapeVidSrcMe }         from './extractors/vidsrcme.js';
-import { scrapeVidZee }           from './extractors/vidzee.js';
-import { scrapePrimeSrc }         from './extractors/primesrc.js';
-import { scrapeVdrkCaptions }     from './extractors/subs_vdrk.js';
-import { scrapeSuperEmbed }       from './extractors/superembed.js';
-import { scrapeVidSrcXyz }        from './extractors/vidsrcxyz.js';
-import { scrapeVidLink }          from './extractors/vidlink.js';
-import { scrapeVidNest }          from './extractors/vidnest.js';
-import { scrapeNontonGo }         from './extractors/nontongo.js';
-import { scrapeLookMovie }        from './extractors/lookmovie.js';
-import { scrapeRidoMovies }       from './extractors/ridomovies.js';
-// Removed: AutoEmbed (New Relic JS gate), MoviesAPI (domain dead), 2Embed (all mirrors 403), EmbedSu (DNS dead)
+import { scrapeVixSrc }       from './extractors/vixsrc.js';
+import { extractVaPlayer }    from './extractors/vaplayer.js';
+import { scrapeLookMovie }    from './extractors/lookmovie.js';
+import { scrapePrimeSrc }     from './extractors/primesrc.js';
+import { scrapeVdrkCaptions } from './extractors/subs_vdrk.js';
 
 /**
- * Race multiple extractors concurrently.
- * Returns the first successful result (non-null, has real M3U8 sources).
- * Losers are abandoned but NOT cancelled (JS Promises can't be cancelled).
+ * Race multiple extractor functions.
+ * Returns the first that succeeds with real (non-embed) M3U8 sources.
+ * All others are abandoned (not cancellable in JS).
  */
-function raceExtractors(extractors, timeoutMs = 20000) {
+function raceExtractors(extractors, timeoutMs) {
     return new Promise(resolve => {
         let settled = 0;
         const total = extractors.length;
@@ -64,117 +67,93 @@ function raceExtractors(extractors, timeoutMs = 20000) {
 
         if (total === 0) { resolve(null); return; }
 
+        const timer = setTimeout(() => { if (!resolved) resolve(null); }, timeoutMs);
+
         const done = (result) => {
             if (!resolved && result?.success && result.sources?.length && !result.sources.every(s => s.isEmbed)) {
                 resolved = true;
+                clearTimeout(timer);
                 resolve(result);
             } else {
                 settled++;
-                if (!resolved && settled === total) resolve(null);
+                if (!resolved && settled === total) {
+                    clearTimeout(timer);
+                    resolve(null);
+                }
             }
         };
 
-        const timer = setTimeout(() => { if (!resolved) resolve(null); }, timeoutMs);
-
-        extractors.forEach(fn => {
-            fn().then(done).catch(() => done(null));
-        });
+        extractors.forEach(fn => fn().then(done).catch(() => done(null)));
     });
 }
 
 export async function resolveStreaming(tmdbId, type, season, episode, title, year) {
-    console.log(`[Resolver] Racing live cluster for: ${title || tmdbId} (${type})`);
+    console.log(`[Resolver v16] Resolving: ${title || tmdbId} (${type}${type === 'tv' ? ` S${season}E${episode}` : ''})`);
 
-    // Always fetch external subtitles in parallel — never blocks stream resolution
+    // External subtitles fetched in parallel throughout — never blocks stream
     const externalSubsPromise = scrapeVdrkCaptions(tmdbId, type, season, episode).catch(() => []);
 
     const mergeSubtitles = async (result) => {
-        if (result) {
-            const externalSubtitles = await externalSubsPromise;
-            if (externalSubtitles?.length > 0) {
-                result.subtitles = [...(result.subtitles || []), ...externalSubtitles];
-            }
+        if (!result) return result;
+        const externalSubs = await externalSubsPromise;
+        if (externalSubs?.length) {
+            result.subtitles = [...(result.subtitles || []), ...externalSubs];
         }
         return result;
     };
 
-    // ═══ Stage 1A: Direct providers (bare HF datacenter IP, CDN not IP-locked) ══════════════
-    // All providers here must satisfy:
-    //   1. API accessible from AWS/GCP/HF datacenter IPs (no Cloudflare IUAM, no New Relic)
-    //   2. CDN tokens NOT IP-bound (backend proxy can fetch without getting 403)
-    //
-    // VidZee: ✅ Confirmed working — 6 sources, CDN is NOT IP-locked (no token in URL)
-    //   ⚠️ CDN has NO CORS headers (zebi.xalaflix.design, i-arch-400.kessy412lad.com)
-    //   MUST go through /proxy/stream — backend adds Access-Control-Allow-Origin:*
-    //   noProxy:true was tried and reverted — browser CORS policy blocks direct fetch
-    // SuperEmbed: ⚠️ intermittent — worth trying as fast parallel bet
-    console.log('[Resolver] Stage 1A: Racing (VidZee, SuperEmbed, VidNest, NontonGo)...');
-    const stage1A = [
+    // ══ Stage 1: VidZee (fastest, most sources) ════════════════════════════
+    // VidZee: AES-GCM key API + AES-CBC URL decryption.
+    // CDN domains block HF IPs → noProxy=true (browser fetches directly).
+    // 3 movie sources / 5 TV sources typical. ~1.8s resolution time.
+    console.log('[Resolver] Stage 1: VidZee...');
+    const stage1Result = await raceExtractors([
         () => scrapeVidZee(tmdbId, type, season, episode),
-        () => scrapeSuperEmbed(tmdbId, type, season, episode),
-        () => scrapeVidNest(tmdbId, type, season, episode),
-        () => scrapeNontonGo(tmdbId, type, season, episode),
-    ];
-    const winner1A = await raceExtractors(stage1A, 12000);
-    if (winner1A) {
-        console.log(`[Resolver] ✅ Stage 1A Winner: ${winner1A.provider}`);
-        return mergeSubtitles(winner1A);
+    ], 8000);
+
+    if (stage1Result) {
+        console.log(`[Resolver] ✅ Stage 1 Winner: ${stage1Result.provider}`);
+        return mergeSubtitles(stage1Result);
     }
 
-
-    // ── Stage 1B: Auth-chain scrapers (need proxy — may 407 if proxy expired) ─────────────
-    console.log('[Resolver] Stage 1B: Racing VidSrc cluster + VidLink + LookMovie + RidoMovies...');
-    const stage1B = [
-        () => scrapeVidSrcTo(tmdbId, type, season, episode),
-        () => scrapeVidSrcMe(tmdbId, type, season, episode),
+    // ══ Stage 2: Parallel race — VidSrc.ru + VixSrc + VaPlayer + LookMovie ═
+    // All confirmed working from HF datacenter IPs.
+    // VixSrc (1-2.6s) and VaPlayer (2.4s) are fastest so usually win.
+    // VidSrc.ru (7.7s) and LookMovie (7.4s) are fallbacks.
+    // noProxy already set on VidSrc.ru sources.
+    // VixSrc gets noProxy=true below (token IP-bound — browser plays directly).
+    // VaPlayer CDN is not IP-locked, proxy works fine.
+    console.log('[Resolver] Stage 2: Racing VidSrc.ru, VixSrc, VaPlayer, LookMovie...');
+    const stage2Result = await raceExtractors([
         () => scrapeVidSrcRu(tmdbId, type, season, episode),
-        () => scrapeVidSrcXyz(tmdbId, type, season, episode),
-        () => scrapeVidLink(tmdbId, type, season, episode),
-        () => scrapeLookMovie(tmdbId, type === 'movie' ? 'movie' : 'show', season, episode, title, year),
-        () => scrapeRidoMovies(tmdbId, type === 'movie' ? 'movie' : 'show', season, episode, title, year),
-    ];
-    const winner1B = await raceExtractors(stage1B, 25000);
-    if (winner1B) {
-        console.log(`[Resolver] ✅ Stage 1B Winner: ${winner1B.provider}`);
-        return mergeSubtitles(winner1B);
-    }
-
-    // ── Stage 2: VixSrc + VaPlayer (IP-problematic, try as last resort) ──────
-    // VixSrc: token is IP-locked; if the residential proxy scrapes it, the
-    //   browser (user IP) can still play it since HLS.js sends no Referer check.
-    //   BUT if the HF server IP scrapes it, both server-proxy AND browser fail.
-    // VaPlayer: CDN (brightpathsignals.com) frequently IP-bans HF Space ranges.
-    console.log('[Resolver] Stage 2: Trying VixSrc + VaPlayer (IP-problematic, last chance)...');
-    const stage2 = [
         () => scrapeVixSrc(tmdbId, type, season, episode),
         () => extractVaPlayer({ tmdbId, type, season, episode }),
-    ];
-    const winner2 = await raceExtractors(stage2, 15000);
-    if (winner2) {
-        // Restore noProxy for VixSrc since the token IP-binding means browser-direct
-        // is the only viable path (proxy fails with HF IP, noProxy fails without Referer
-        // on some browsers — this is a known limitation)
-        if (winner2.provider?.includes('VixSrc') && winner2.sources) {
-            winner2.sources = winner2.sources.map(s => ({ ...s, noProxy: true }));
+        () => scrapeLookMovie(tmdbId, type === 'movie' ? 'movie' : 'show', season, episode, title, year),
+    ], 18000);
+
+    if (stage2Result) {
+        // VixSrc token is IP-bound → mark for browser-direct fetch
+        if (stage2Result.provider?.includes('VixSrc') && stage2Result.sources) {
+            stage2Result.sources = stage2Result.sources.map(s => ({ ...s, noProxy: true }));
         }
-        console.log(`[Resolver] ⚠️ Stage 2 Winner: ${winner2.provider} (CDN may 403)`);
-        return mergeSubtitles(winner2);
+        console.log(`[Resolver] ✅ Stage 2 Winner: ${stage2Result.provider}`);
+        return mergeSubtitles(stage2Result);
     }
 
-    // ── Stage 3: Last-resort embed-only ──────────────────────────────────────
-    console.log('[Resolver] Stage 3: Falling back to embed-only (PrimeSrc)...');
+    // ══ Stage 3: Embed-only fallback ═══════════════════════════════════════
+    console.log('[Resolver] Stage 3: PrimeSrc embed fallback...');
     try {
         const stage3Result = await scrapePrimeSrc(tmdbId, type, season, episode);
         if (stage3Result?.success && stage3Result.sources?.length) {
-            console.log(`[Resolver] ⚠️ Stage 3 Embed Fallback: ${stage3Result.provider}`);
             stage3Result.isEmbedFallback = true;
+            console.log(`[Resolver] ⚠️ Stage 3 Embed Fallback: ${stage3Result.provider}`);
             return stage3Result;
         }
-    } catch (e) { /* ignore */ }
+    } catch (_) {}
 
-    console.warn(`[Resolver] ❌ All providers failed for: ${title || tmdbId}`);
+    console.warn(`[Resolver] ❌ All stages failed for: ${title || tmdbId}`);
     return {
         success: false,
-        error: 'No stream found. All providers are currently unavailable. Please try again in a moment.'
+        error: 'No stream found. All providers are currently unavailable. Please try again in a moment.',
     };
 }

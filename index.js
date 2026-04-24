@@ -1,4 +1,4 @@
-import express from 'express';
+﻿import express from 'express';
 import cors from 'cors';
 import { createProxyMiddleware } from 'http-proxy-middleware';
 import axios from 'axios';
@@ -13,7 +13,7 @@ import { USER_AGENTS, getRandomUA } from './utils/constants.js';
 import Redis from 'ioredis';
 import { recordProviderError, recordProviderSuccess, getAllProviderHealth } from './services/providerHealth.js';
 dotenv.config();
-// BUILD: 2026-04-16T06:50Z � SuperEmbed Stage1A, proxy?gigaAxios, raceExtractors v14.1
+// BUILD: 2026-04-16T06:50Z � SuperEmbed Stage1A, proxy?gigaAxios, raceExtractors v14.1
 
 import { gigaAxios, proxyAxios, browserHttpsAgent } from './utils/http.js';
 
@@ -445,6 +445,16 @@ app.get('/proxy/stream', async (req, res) => {
         // Patch persistent NGINX double-encoding traps
         targetUrl = targetUrl.replace(/%252F/g, '/').replace(/%2F/gi, '/').replace(/%253D/g, '=').replace(/%3D/gi, '=');
 
+
+        // Fast-fail: CDN domains that block HF datacenter IPs — frontier must use noProxy
+        const CDN_BLOCKLIST = ['neonhorizonworkshops.com','wanderlynest.com','orchidpixelgardens.com','zebi.xalaflix.design'];
+        try {
+            const targetHost = new URL(targetUrl).hostname;
+            if (CDN_BLOCKLIST.some(blocked => targetHost.endsWith(blocked))) {
+                console.warn([Proxy] Fast-fail: CDN block on +targetHost);
+                return res.status(403).json({ error: 'CDN_BLOCK', message: CDN blocks datacenter IPs - use noProxy=true });
+            }
+        } catch (_) {}
         // Detect M3U8 by URL pattern — includes /playlist/ (VixSrc), .m3u8, /manifest, etc.
         const isM3U8 = /\.m3u8/i.test(targetUrl)
             || /\/manifest/i.test(targetUrl)
