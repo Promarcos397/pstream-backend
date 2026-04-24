@@ -762,25 +762,56 @@ app.get('/api/stream', async (req, res) => {
     const { tmdbId, type, season, episode, imdbId, title, year } = req.query;
     if (!tmdbId || !type) return res.status(400).json({ success: false, error: 'tmdbId and type are required' });
     try {
+        const reqProto = req.headers['x-forwarded-proto'] || 'https';
+        const reqHost  = req.get('host');
+
+        // ── Redis cache check ────────────────────────────────────────────────
+        // TTL = 90s: short enough that VidZee/VixSrc IP-locked tokens are still
+        // fresh when served, long enough to absorb warm-prefetch → play latency.
+        const STREAM_CACHE_TTL = 90; // seconds
+        const redisCacheKey = `stream:${tmdbId}:${type}:${season || 1}:${episode || 1}`;
+        if (redis) {
+            try {
+                const cached = await redis.get(redisCacheKey);
+                if (cached) {
+                    const streamData = JSON.parse(cached);
+                    console.log(`[Backend Cache] ✅ Redis HIT for ${redisCacheKey}`);
+                    // Still rewrite manifest proxies for this request's host
+                    if (streamData?.sources) {
+                        streamData.sources = streamData.sources.map(source => {
+                            if (!source.cachedManifest) return source;
+                            const baseUrl = source.manifestBaseUrl || source.url;
+                            const rewritten = rewriteFullProxyManifest(source.cachedManifest, baseUrl, reqProto, reqHost, source.referer || '');
+                            return { ...source, directManifest: rewritten, cachedManifest: undefined };
+                        });
+                    }
+                    return res.json(streamData);
+                }
+            } catch (redisErr) {
+                console.warn('[Backend Cache] Redis read failed:', redisErr.message);
+            }
+        }
+
         const streamData = await resolveStreaming(tmdbId, type, season, episode, title, year);
 
-        // If a source has a pre-fetched manifest (VidLink IP-signed token fix),
-        // rewrite its relative/absolute segment URLs to go through our proxy,
-        // then embed result as directManifest so the frontend can Blob URL it
+        // ── Process cachedManifest sources ──────────────────────────────────
         if (streamData?.sources) {
-            const reqProto = req.headers['x-forwarded-proto'] || 'https';
-            const baseProxyUrl = `${reqProto}://${req.get('host')}`;
-
             streamData.sources = streamData.sources.map(source => {
                 if (!source.cachedManifest) return source;
-
                 const baseUrl = source.manifestBaseUrl || source.url;
-                const referer = source.referer || '';
-
-                const rewritten = rewriteFullProxyManifest(source.cachedManifest, baseUrl, reqProto, req.get('host'), referer);
-
+                const rewritten = rewriteFullProxyManifest(source.cachedManifest, baseUrl, reqProto, reqHost, source.referer || '');
                 return { ...source, directManifest: rewritten, cachedManifest: undefined };
             });
+        }
+
+        // ── Write to Redis if success ────────────────────────────────────────
+        if (redis && streamData?.success && streamData?.sources?.length) {
+            try {
+                await redis.set(redisCacheKey, JSON.stringify(streamData), 'EX', STREAM_CACHE_TTL);
+                console.log(`[Backend Cache] 💾 Cached ${redisCacheKey} for ${STREAM_CACHE_TTL}s`);
+            } catch (redisErr) {
+                console.warn('[Backend Cache] Redis write failed:', redisErr.message);
+            }
         }
 
         res.json(streamData);
@@ -789,6 +820,7 @@ app.get('/api/stream', async (req, res) => {
         res.status(500).json({ success: false, error: e.message });
     }
 });
+
 
 // --- AUTH SYSTEM (Challenge/Sync) ---
 
