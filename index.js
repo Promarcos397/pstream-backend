@@ -446,8 +446,12 @@ app.get('/proxy/stream', async (req, res) => {
         targetUrl = targetUrl.replace(/%252F/g, '/').replace(/%2F/gi, '/').replace(/%253D/g, '=').replace(/%3D/gi, '=');
 
 
-        // Fast-fail: CDN domains that block HF datacenter IPs — frontier must use noProxy
-        const CDN_BLOCKLIST = ['neonhorizonworkshops.com','wanderlynest.com','orchidpixelgardens.com','zebi.xalaflix.design'];
+        // Fast-fail: CDN domains that block HF datacenter IPs — these return 403 from our proxy
+        // nicheauthorityengine.site / brightpathsignals.com = VaPlayer CDNs (confirmed 403 in prod logs 2026-04-24)
+        const CDN_BLOCKLIST = [
+            'neonhorizonworkshops.com','wanderlynest.com','orchidpixelgardens.com','zebi.xalaflix.design',
+            'nicheauthorityengine.site','brightpathsignals.com',
+        ];
         try {
             const targetHost = new URL(targetUrl).hostname;
             if (CDN_BLOCKLIST.some(blocked => targetHost.endsWith(blocked))) {

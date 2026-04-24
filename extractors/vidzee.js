@@ -187,8 +187,11 @@ export async function scrapeVidZee(tmdbId, type, season, episode) {
             url,
             quality: 'auto',
             isM3U8: true,
-            // CDN blocks HF datacenter IPs — browser fetches directly
-            noProxy: true,
+            // VidZee tokens are IP-locked to the HF scraper IP at generation time.
+            // noProxy: false → route through HF proxy so requests arrive from the
+            // same datacenter IP, matching the token. Browser-direct (noProxy: true)
+            // always 403s because the user's residential IP != scraper IP.
+            noProxy: false,
             referer: BASE_URL + '/',
         }));
 
