@@ -832,6 +832,10 @@ app.get('/api/youtube/captions', async (req, res) => {
     }
 });
 
+const ytSearchCache = new Map();
+const YT_SEARCH_CACHE_TTL_MS = 10 * 60 * 1000;
+const YT_SEARCH_EMPTY_TTL_MS = 2 * 60 * 1000;
+
 // YouTube Search Proxy — no API key required fallback for trailer search.
 // Returns only video IDs to keep payload small and stable.
 app.get('/api/youtube/search', async (req, res) => {
@@ -843,7 +847,17 @@ app.get('/api/youtube/search', async (req, res) => {
         return res.status(400).json({ error: 'q is required', videoIds: [] });
     }
 
+    const cacheKey = `${rawQ}::${maxResults}`;
+    const cacheHit = ytSearchCache.get(cacheKey);
+    if (cacheHit && cacheHit.expiresAt > Date.now()) {
+        return res.json(cacheHit.payload);
+    }
+
     const uniqueIds = (ids) => [...new Set((ids || []).filter(id => /^[A-Za-z0-9_-]{11}$/.test(id)))].slice(0, maxResults);
+    const putCache = (payload, ttlMs) => {
+        ytSearchCache.set(cacheKey, { payload, expiresAt: Date.now() + ttlMs });
+        return payload;
+    };
 
     // 1) Primary: scrape official YouTube search HTML from backend network.
     try {
@@ -864,17 +878,43 @@ app.get('/api/youtube/search', async (req, res) => {
         const html = String(ytResp.data || '');
         const ids = uniqueIds([...html.matchAll(/"videoId":"([A-Za-z0-9_-]{11})"/g)].map(m => m[1]));
         if (ids.length > 0) {
-            return res.json({ videoIds: ids, source: 'youtube-html' });
+            return res.json(putCache({ videoIds: ids, source: 'youtube-html' }, YT_SEARCH_CACHE_TTL_MS));
         }
     } catch (e) {
         console.warn(`[YouTubeSearch] youtube-html failed: ${e?.response?.status || e.message}`);
     }
 
-    // 2) Secondary: Invidious public API instances.
+    // 2) Secondary: DuckDuckGo HTML results can provide youtube.com/watch links
+    // even when direct youtube.com TLS is unstable from this runtime.
+    try {
+        const ddgUrl = `https://duckduckgo.com/html/?q=${encodeURIComponent(`${rawQ} official trailer site:youtube.com/watch`)}`;
+        const ddgResp = await axios.get(ddgUrl, {
+            headers: {
+                'User-Agent': getRandomUA(),
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept': 'text/html,application/xhtml+xml',
+            },
+            timeout: 10000,
+            responseType: 'text',
+        });
+        const ddgHtml = String(ddgResp.data || '');
+        const ddgIds = uniqueIds([
+            ...ddgHtml.matchAll(/[?&]v=([A-Za-z0-9_-]{11})/g),
+            ...ddgHtml.matchAll(/youtube\.com\/watch%3Fv%3D([A-Za-z0-9_-]{11})/g),
+            ...ddgHtml.matchAll(/youtu\.be\/([A-Za-z0-9_-]{11})/g),
+        ].map(m => m[1]));
+
+        if (ddgIds.length > 0) {
+            return res.json(putCache({ videoIds: ddgIds, source: 'duckduckgo-html' }, YT_SEARCH_CACHE_TTL_MS));
+        }
+    } catch (e) {
+        console.warn(`[YouTubeSearch] duckduckgo-html failed: ${e?.response?.status || e.message}`);
+    }
+
+    // 3) Last resort: Invidious public API instances.
     const invidiousInstances = [
-        'https://invidious.fdn.fr',
+        'https://yewtu.be',
         'https://invidious.privacyredirect.com',
-        'https://inv.nadeko.net',
     ];
 
     for (const instance of invidiousInstances) {
@@ -888,14 +928,14 @@ app.get('/api/youtube/search', async (req, res) => {
             const arr = Array.isArray(invResp.data) ? invResp.data : [];
             const ids = uniqueIds(arr.map(item => item?.videoId).filter(Boolean));
             if (ids.length > 0) {
-                return res.json({ videoIds: ids, source: `invidious:${instance}` });
+                return res.json(putCache({ videoIds: ids, source: `invidious:${instance}` }, YT_SEARCH_CACHE_TTL_MS));
             }
         } catch (e) {
             console.warn(`[YouTubeSearch] invidious failed (${instance}): ${e?.response?.status || e.message}`);
         }
     }
 
-    return res.json({ videoIds: [], source: 'none' });
+    return res.json(putCache({ videoIds: [], source: 'none' }, YT_SEARCH_EMPTY_TTL_MS));
 });
 
 // --- GIGA API ENDPOINTS ---
