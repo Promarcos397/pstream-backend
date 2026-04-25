@@ -77,7 +77,7 @@ const getAsset = (name, remote) => {
     return remote;
 };
 
-const LOGO = getAsset('pstream-logo.png', 'https://raw.githubusercontent.com/Promarcos397/pstream-frontend/main/assets/pstream-logo.png');
+const LOGO = getAsset('pstream-logo.svg', 'https://raw.githubusercontent.com/Promarcos397/pstream-frontend/main/assets/logos/pstream-logo.svg');
 const BG_IMG = getAsset('landing-bg.png', 'https://raw.githubusercontent.com/Promarcos397/pstream-frontend/main/assets/landing-bg.png');
 
 // --- CINEMATIC DESIGN SYSTEM ---
@@ -212,19 +212,21 @@ app.get('/api/ping', (req, res) => {
 app.get('/api/debug-providers', async (req, res) => {
     const { tmdbId = '637', type = 'movie', season = '1', episode = '1' } = req.query;
 
-    // Import extractors
+    // Import active resolver extractors (legacy/dead providers removed)
     const [
-        { scrapeAutoEmbed },
+        { scrapeVixSrc },
+        { extractVaPlayer },
         { scrapeVidZee },
-        { scrape2Embed: scrape2EmbedFn },
-        { scrapeMoviesApi },
-        { scrapeVidSrcTo },
+        { scrapeVidSrc: scrapeVidSrcRu },
+        { scrapeLookMovie },
+        { scrapePrimeSrc },
     ] = await Promise.all([
-        import('./extractors/autoembed.js'),
+        import('./extractors/vixsrc.js'),
+        import('./extractors/vaplayer.js'),
         import('./extractors/vidzee.js'),
-        import('./extractors/twoembed.js'),
-        import('./extractors/moviesapi.js'),
-        import('./extractors/vidsrcto.js'),
+        import('./extractors/vidsrcru.js'),
+        import('./extractors/lookmovie.js'),
+        import('./extractors/primesrc.js'),
     ]);
 
     // Wrap each extractor to catch and expose errors (normally they silently return null)
@@ -257,11 +259,12 @@ app.get('/api/debug-providers', async (req, res) => {
     };
 
     const results = await Promise.allSettled([
-        test('AutoEmbed', () => scrapeAutoEmbed(tmdbId, type, season, episode)),
+        test('VixSrc',    () => scrapeVixSrc(tmdbId, type, season, episode)),
+        test('VaPlayer',  () => extractVaPlayer({ tmdbId, type, season, episode })),
         test('VidZee',    () => scrapeVidZee(tmdbId, type, season, episode)),
-        test('2Embed',    () => scrape2EmbedFn(tmdbId, type, season, episode)),
-        test('MoviesAPI', () => scrapeMoviesApi(tmdbId, type, season, episode)),
-        test('VidSrc.to', () => scrapeVidSrcTo(tmdbId, type, season, episode)),
+        test('VidSrc.ru', () => scrapeVidSrcRu(tmdbId, type, season, episode)),
+        test('LookMovie', () => scrapeLookMovie(tmdbId, type === 'movie' ? 'movie' : 'show', season, episode, req.query.title || '', req.query.year || '')),
+        test('PrimeSrc',  () => scrapePrimeSrc(tmdbId, type, season, episode)),
     ]);
 
     res.json({ tmdbId, type, results: results.map(r => r.value || { error: r.reason?.message }) });
@@ -271,18 +274,40 @@ app.get('/api/debug-providers', async (req, res) => {
 
 app.get('/healthcheck', async (req, res) => {
     const mem = Math.floor(process.memoryUsage().heapUsed / 1024 / 1024);
-    const cpu = Math.floor(os.loadavg()[0] * 100) / 10;
+    const rss = Math.floor(process.memoryUsage().rss / 1024 / 1024);
+    const cpuUsage = process.cpuUsage();
+    const cpu = Math.round((((cpuUsage.user + cpuUsage.system) / 1000) / Math.max(process.uptime(), 1)) / 10) / 10;
     const uptime = Math.floor(process.uptime());
 
     const providers = [
-        { name: 'VidSrc.to', url: 'https://vidsrc.to' },
-        { name: 'VixSrc.to', url: 'https://vixsrc.to' },
-        { name: 'Embed.su', url: 'https://embed.su' },
-        { name: 'VidSrc.me', url: 'https://vidsrc.me' },
-        { name: 'VidSrc.vip', url: 'https://vidsrc.vip' },
-        { name: 'SuperEmbed', url: 'https://multiembed.mov' },
-        { name: '2Embed', url: 'https://www.2embed.cc' }
+        { name: 'VixSrc', url: 'https://vixsrc.to' },
+        { name: 'VaPlayer', url: 'https://streamdata.vaplayer.ru' },
+        { name: 'VidZee', url: 'https://player.vidzee.wtf' },
+        { name: 'VidSrc.ru', url: 'https://vsembed.ru' },
+        { name: 'LookMovie API', url: 'https://lmscript.xyz' },
+        { name: 'PrimeSrc', url: 'https://primesrc.me' }
     ];
+    const probeProvider = async (provider) => {
+        const started = Date.now();
+        try {
+            const resp = await gigaAxios.get(provider.url, {
+                timeout: 5000,
+                maxRedirects: 2,
+                validateStatus: () => true,
+            });
+            const status = resp.status;
+            // 2xx/3xx/4xx all prove the host is reachable from backend network.
+            const ok = status >= 200 && status < 500;
+            return { ...provider, ok, status, latencyMs: Date.now() - started };
+        } catch (e) {
+            return { ...provider, ok: false, status: 0, latencyMs: Date.now() - started, error: e.message };
+        }
+    };
+    const providerStatus = await Promise.all(providers.map(probeProvider));
+    const providerUpCount = providerStatus.filter(p => p.ok).length;
+    const providerHealth = await getAllProviderHealth();
+    const suspendedCount = Object.values(providerHealth || {}).filter((p) => p?.suspended).length;
+    const redisStatus = !!redis;
 
     if (req.headers.accept?.includes('text/html')) {
         res.send(`
@@ -321,18 +346,37 @@ app.get('/healthcheck', async (req, res) => {
                         </div>
                         <div class="grid-item">
                             <span class="val">${mem}MB</span>
-                            <span class="lbl">Memory</span>
+                            <span class="lbl">Heap Used</span>
+                        </div>
+                        <div class="grid-item">
+                            <span class="val">${rss}MB</span>
+                            <span class="lbl">RSS</span>
                         </div>
                         <div class="grid-item">
                             <span class="val">${cpu}%</span>
-                            <span class="lbl">Load</span>
+                            <span class="lbl">CPU Avg</span>
+                        </div>
+                        <div class="grid-item">
+                            <span class="val">${providerUpCount}/${providerStatus.length}</span>
+                            <span class="lbl">Providers Up</span>
+                        </div>
+                        <div class="grid-item">
+                            <span class="val"><span class="status-dot ${redisStatus ? '' : 'dot-offline'}"></span>${redisStatus ? 'Online' : 'Off'}</span>
+                            <span class="lbl">Redis</span>
+                        </div>
+                        <div class="grid-item">
+                            <span class="val">${suspendedCount}</span>
+                            <span class="lbl">Suspended</span>
                         </div>
                     </div>
 
                     <span class="lbl" style="text-align: left; display: block; margin-left: 5px">Cluster Relays</span>
                     <div class="provider-list">
-                        ${providers.map(p => `
-                            <a href="${p.url}" target="_blank" class="p-link"><span class="p-dot"></span>${p.name}</a>
+                        ${providerStatus.map(p => `
+                            <a href="${p.url}" target="_blank" class="p-link">
+                                <span class="p-dot ${p.ok ? '' : 'dot-offline'}"></span>
+                                ${p.name} ${p.status ? `<span style="opacity:.6;margin-left:6px">(${p.status}, ${p.latencyMs}ms)</span>` : `<span style="opacity:.6;margin-left:6px">(offline)</span>`}
+                            </a>
                         `).join('')}
                     </div>
 
@@ -345,7 +389,15 @@ app.get('/healthcheck', async (req, res) => {
         </html>
         `);
     } else {
-        res.json({ status: 'live', uptime, memory: mem, load: cpu, redis: !!redis, providers });
+        res.json({
+            status: 'live',
+            uptime,
+            memory: { heapMb: mem, rssMb: rss },
+            cpuAvgPercent: cpu,
+            redis: redisStatus,
+            providers: providerStatus,
+            health: providerHealth
+        });
     }
 });
 
@@ -766,15 +818,25 @@ app.get('/api/stream', async (req, res) => {
         const reqHost  = req.get('host');
 
         // ── Redis cache check ────────────────────────────────────────────────
-        // TTL = 90s: short enough that VidZee/VixSrc IP-locked tokens are still
-        // fresh when served, long enough to absorb warm-prefetch → play latency.
-        const STREAM_CACHE_TTL = 90; // seconds
+        // Cache wrapper allows provider-specific freshness windows:
+        // short-lived token providers (VixSrc/VaPlayer) expire quickly,
+        // stable providers can keep a longer TTL.
+        const STREAM_CACHE_TTL_DEFAULT = 90; // seconds
+        const STREAM_CACHE_TTL_TOKENIZED = 15; // seconds
         const redisCacheKey = `stream:${tmdbId}:${type}:${season || 1}:${episode || 1}`;
         if (redis) {
             try {
                 const cached = await redis.get(redisCacheKey);
                 if (cached) {
-                    const streamData = JSON.parse(cached);
+                    const parsed = JSON.parse(cached);
+                    const isWrapped = !!parsed?.data && !!parsed?.meta;
+                    const streamData = isWrapped ? parsed.data : parsed;
+                    const cacheTs = isWrapped ? parsed.meta.ts : 0;
+                    const maxAgeSeconds = isWrapped ? (parsed.meta.maxAgeSeconds || STREAM_CACHE_TTL_DEFAULT) : STREAM_CACHE_TTL_DEFAULT;
+                    if (cacheTs && ((Date.now() - cacheTs) > (maxAgeSeconds * 1000))) {
+                        console.log(`[Backend Cache] ⏳ Stale cache bypass for ${redisCacheKey}`);
+                        await redis.del(redisCacheKey);
+                    } else {
                     console.log(`[Backend Cache] ✅ Redis HIT for ${redisCacheKey}`);
                     // Still rewrite manifest proxies for this request's host
                     if (streamData?.sources) {
@@ -786,6 +848,7 @@ app.get('/api/stream', async (req, res) => {
                         });
                     }
                     return res.json(streamData);
+                    }
                 }
             } catch (redisErr) {
                 console.warn('[Backend Cache] Redis read failed:', redisErr.message);
@@ -807,8 +870,19 @@ app.get('/api/stream', async (req, res) => {
         // ── Write to Redis if success ────────────────────────────────────────
         if (redis && streamData?.success && streamData?.sources?.length) {
             try {
-                await redis.set(redisCacheKey, JSON.stringify(streamData), 'EX', STREAM_CACHE_TTL);
-                console.log(`[Backend Cache] 💾 Cached ${redisCacheKey} for ${STREAM_CACHE_TTL}s`);
+                const providers = (streamData.sources || []).map(s => `${s.provider || ''}`.toLowerCase());
+                const hasFragileProvider = providers.some(p => p.includes('vixsrc') || p.includes('vaplayer'));
+                const ttl = hasFragileProvider ? STREAM_CACHE_TTL_TOKENIZED : STREAM_CACHE_TTL_DEFAULT;
+                const cachePayload = {
+                    data: streamData,
+                    meta: {
+                        ts: Date.now(),
+                        maxAgeSeconds: ttl,
+                        providers: providers.filter(Boolean)
+                    }
+                };
+                await redis.set(redisCacheKey, JSON.stringify(cachePayload), 'EX', ttl);
+                console.log(`[Backend Cache] 💾 Cached ${redisCacheKey} for ${ttl}s`);
             } catch (redisErr) {
                 console.warn('[Backend Cache] Redis write failed:', redisErr.message);
             }
@@ -900,9 +974,16 @@ app.delete('/api/sync', authenticateToken, async (req, res) => {
 // Frontend calls this when HLS.js fires a fatal error on a stream
 app.post('/api/stream/report-error', async (req, res) => {
     try {
-        const { provider, tmdbId, type, error, errorCode } = req.body;
+        const { provider, tmdbId, type, season, episode, error, errorCode } = req.body;
         if (!provider) return res.status(400).json({ error: 'Missing provider' });
         await recordProviderError(provider, { tmdbId, type, error, errorCode });
+        if (redis && tmdbId && type) {
+            const key = `stream:${tmdbId}:${type}:${season || 1}:${episode || 1}`;
+            try {
+                await redis.del(key);
+                console.log(`[HealthReport] Cache cleared: ${key}`);
+            } catch (_) {}
+        }
         console.log(`[HealthReport] Error reported for ${provider}: ${error || errorCode}`);
         res.json({ success: true });
     } catch (e) {

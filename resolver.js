@@ -53,6 +53,7 @@ import { extractVaPlayer }    from './extractors/vaplayer.js';
 import { scrapeLookMovie }    from './extractors/lookmovie.js';
 import { scrapePrimeSrc }     from './extractors/primesrc.js';
 import { scrapeVdrkCaptions } from './extractors/subs_vdrk.js';
+import { filterByHealth }     from './services/providerHealth.js';
 
 /**
  * Race multiple extractor functions.
@@ -63,46 +64,65 @@ import { scrapeVdrkCaptions } from './extractors/subs_vdrk.js';
  * takes 8-12s, Stage 1 timeout is 8s). Dead-URL detection is handled client-side:
  * useHls.ts treats 404/403 as cache-bust + full backend refetch.
  */
-function raceExtractors(extractors, timeoutMs) {
+function collectExtractorResults(extractors, timeoutMs, graceAfterFirstMs = 1200) {
     return new Promise(resolve => {
         let settled = 0;
         const total = extractors.length;
         let resolved = false;
+        let firstSuccessSeen = false;
+        let graceTimer = null;
+        const successes = [];
 
-        if (total === 0) { resolve(null); return; }
+        if (total === 0) { resolve([]); return; }
+
+        const finalize = () => {
+            if (resolved) return;
+            resolved = true;
+            clearTimeout(timer);
+            if (graceTimer) clearTimeout(graceTimer);
+            resolve(successes);
+        };
 
         const timer = setTimeout(() => {
-            if (!resolved) {
+            if (!firstSuccessSeen) {
                 console.warn(`[Race] ⏱ Timeout after ${timeoutMs}ms — all ${total} extractors slow/failed`);
-                resolve(null);
+            } else {
+                console.log(`[Race] ⏱ Timeout after ${timeoutMs}ms — returning ${successes.length} successful provider(s)`);
             }
+            finalize();
         }, timeoutMs);
 
-        const done = (result, providerName) => {
+        const done = (result, providerName, startTs) => {
             if (resolved) return;
+            const elapsed = Date.now() - startTs;
 
             if (result?.success && result.sources?.length && !result.sources.every(s => s.isEmbed)) {
-                resolved = true;
-                clearTimeout(timer);
-                console.log(`[Race] 🏆 Winner: ${result.provider || providerName}`);
-                resolve(result);
+                firstSuccessSeen = true;
+                successes.push({ ...result, _elapsedMs: elapsed, _providerName: providerName });
+                console.log(`[Race] ✅ ${result.provider || providerName} in ${elapsed}ms`);
+
+                if (!graceTimer) {
+                    graceTimer = setTimeout(() => finalize(), graceAfterFirstMs);
+                }
             } else {
-                console.log(`[Race] ✗ ${result?.provider || providerName || 'Unknown'} — no valid sources`);
+                console.log(`[Race] ✗ ${result?.provider || providerName || 'Unknown'} — no valid sources (${elapsed}ms)`);
                 settled++;
-                if (!resolved && settled === total) {
-                    clearTimeout(timer);
-                    resolve(null);
+                if (settled === total) {
+                    finalize();
                 }
             }
         };
 
-        extractors.forEach((fn, i) => fn().then(
-            result => done(result, `extractor[${i}]`),
+        extractors.forEach(({ run, name }, i) => {
+            const start = Date.now();
+            run().then(
+            result => done(result, name || `extractor[${i}]`, start),
             err => {
-                console.warn(`[Race] ✗ extractor[${i}] threw: ${err?.message || err}`);
-                done(null, `extractor[${i}]`);
+                console.warn(`[Race] ✗ ${name || `extractor[${i}]`} threw: ${err?.message || err}`);
+                done(null, name || `extractor[${i}]`, start);
             }
-        ));
+            );
+        });
     });
 }
 
@@ -133,22 +153,53 @@ export async function resolveStreaming(tmdbId, type, season, episode, title, yea
     //
     // noProxy sources: VidSrc.ru (noProxy already in extractor), VixSrc (set below).
     // VidZee CDN (neonhorizonworkshops etc) blocks HF IPs → noProxy=true in vidzee.js.
-    console.log('[Resolver] Racing all providers: VixSrc, VaPlayer, VidZee, VidSrc.ru, LookMovie...');
-    const stage1Result = await raceExtractors([
-        () => scrapeVixSrc(tmdbId, type, season, episode),
-        () => extractVaPlayer({ tmdbId, type, season, episode }),
-        () => scrapeVidZee(tmdbId, type, season, episode),
-        () => scrapeVidSrcRu(tmdbId, type, season, episode),
-        () => scrapeLookMovie(tmdbId, type === 'movie' ? 'movie' : 'show', season, episode, title, year),
-    ], 20000);
+    const providers = [
+        { name: 'VixSrc', run: () => scrapeVixSrc(tmdbId, type, season, episode) },
+        { name: 'VaPlayer', run: () => extractVaPlayer({ tmdbId, type, season, episode }) },
+        { name: 'VidZee', run: () => scrapeVidZee(tmdbId, type, season, episode) },
+        { name: 'VidSrc.ru', run: () => scrapeVidSrcRu(tmdbId, type, season, episode) },
+        { name: 'LookMovie', run: () => scrapeLookMovie(tmdbId, type === 'movie' ? 'movie' : 'show', season, episode, title, year) },
+    ];
+    const healthyProviders = await filterByHealth(providers);
+    const activeProviders = healthyProviders.length ? healthyProviders : providers;
+    console.log(`[Resolver] Racing providers (${activeProviders.length} active): ${activeProviders.map(p => `${p.name}${p.HealthScore !== undefined ? `:${p.HealthScore}` : ''}`).join(', ')}`);
 
-    if (stage1Result) {
-        // VixSrc token is IP-bound → mark for browser-direct fetch
-        if (stage1Result.provider?.includes('VixSrc') && stage1Result.sources) {
-            stage1Result.sources = stage1Result.sources.map(s => ({ ...s, noProxy: true }));
+    const stage1Results = await collectExtractorResults(activeProviders, 20000, 1200);
+
+    if (stage1Results.length) {
+        const sortedByLatency = [...stage1Results].sort((a, b) => (a._elapsedMs || 0) - (b._elapsedMs || 0));
+        const winner = sortedByLatency[0];
+        const subtitles = [];
+        const subtitleSeen = new Set();
+        const sourceSeen = new Set();
+        const mergedSources = [];
+
+        for (const result of sortedByLatency) {
+            for (const src of (result.sources || [])) {
+                const key = `${src.url}|${src.quality || 'auto'}`;
+                if (sourceSeen.has(key)) continue;
+                sourceSeen.add(key);
+                mergedSources.push({
+                    ...src,
+                    provider: src.provider || result.provider || result._providerName || 'unknown'
+                });
+            }
+            for (const sub of (result.subtitles || [])) {
+                const key = `${sub.url}|${sub.lang || ''}`;
+                if (subtitleSeen.has(key)) continue;
+                subtitleSeen.add(key);
+                subtitles.push(sub);
+            }
         }
-        console.log(`[Resolver] ✅ Winner: ${stage1Result.provider}`);
-        return mergeSubtitles(stage1Result);
+
+        const mergedResult = {
+            ...winner,
+            provider: winner.provider || winner._providerName,
+            sources: mergedSources,
+            subtitles
+        };
+        console.log(`[Resolver] ✅ Winner: ${mergedResult.provider} (merged ${stage1Results.length} providers, ${mergedSources.length} source(s))`);
+        return mergeSubtitles(mergedResult);
     }
 
 

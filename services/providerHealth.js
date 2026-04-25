@@ -110,8 +110,7 @@ export async function recordProviderError(providerName, errorContext = {}) {
 export async function getAllProviderHealth() {
     try {
         const providers = [
-            'vixsrc', 'vaplayer', 'vidsrc_ru', 'vidsrc_xyz',
-            'vidsrc_to', 'vidsrc_me', 'moviesapi', 'superembed', 'vidzee'
+            'vixsrc', 'vaplayer', 'vidsrc_ru', 'vidzee', 'lookmovie', 'primesrc'
         ];
         const result = {};
         for (const p of providers) {
