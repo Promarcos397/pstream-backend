@@ -810,12 +810,14 @@ app.get('/api/youtube/captions', async (req, res) => {
         const params = new URLSearchParams({ v: String(videoId), lang: String(lang), fmt: 'vtt' });
         if (tlang) params.set('tlang', String(tlang));
         const url = `https://www.youtube.com/api/timedtext?${params.toString()}`;
-        const response = await gigaAxios.get(url, {
+        // Use plain axios transport for YouTube endpoints to avoid proxy/TLS chain
+        // instability observed in HF logs for this specific host.
+        const response = await axios.get(url, {
             headers: {
                 'User-Agent': getRandomUA(),
                 'Accept-Language': 'en-US,en;q=0.9',
             },
-            timeout: 8000,
+            timeout: 15000,
             responseType: 'text',
         });
         if (!response.data || String(response.data).trim() === '') {
@@ -846,7 +848,9 @@ app.get('/api/youtube/search', async (req, res) => {
     // 1) Primary: scrape official YouTube search HTML from backend network.
     try {
         const url = `https://www.youtube.com/results?search_query=${encodeURIComponent(rawQ)}&sp=EgIQAQ%3D%3D`;
-        const ytResp = await gigaAxios.get(url, {
+        // Use plain axios transport for YouTube search to avoid proxy/TLS chain
+        // instability observed in HF logs for this specific host.
+        const ytResp = await axios.get(url, {
             headers: {
                 'User-Agent': getRandomUA(),
                 'Accept-Language': 'en-US,en;q=0.9',
