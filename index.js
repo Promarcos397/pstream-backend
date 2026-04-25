@@ -830,6 +830,70 @@ app.get('/api/youtube/captions', async (req, res) => {
     }
 });
 
+// YouTube Search Proxy — no API key required fallback for trailer search.
+// Returns only video IDs to keep payload small and stable.
+app.get('/api/youtube/search', async (req, res) => {
+    const rawQ = String(req.query.q || '').trim();
+    const maxResultsRaw = Number(req.query.maxResults || 5);
+    const maxResults = Math.min(Math.max(maxResultsRaw || 5, 1), 10);
+
+    if (!rawQ) {
+        return res.status(400).json({ error: 'q is required', videoIds: [] });
+    }
+
+    const uniqueIds = (ids) => [...new Set((ids || []).filter(id => /^[A-Za-z0-9_-]{11}$/.test(id)))].slice(0, maxResults);
+
+    // 1) Primary: scrape official YouTube search HTML from backend network.
+    try {
+        const url = `https://www.youtube.com/results?search_query=${encodeURIComponent(rawQ)}&sp=EgIQAQ%3D%3D`;
+        const ytResp = await gigaAxios.get(url, {
+            headers: {
+                'User-Agent': getRandomUA(),
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept': 'text/html,application/xhtml+xml',
+                'Referer': 'https://www.youtube.com/',
+            },
+            timeout: 12000,
+            responseType: 'text',
+        });
+
+        const html = String(ytResp.data || '');
+        const ids = uniqueIds([...html.matchAll(/"videoId":"([A-Za-z0-9_-]{11})"/g)].map(m => m[1]));
+        if (ids.length > 0) {
+            return res.json({ videoIds: ids, source: 'youtube-html' });
+        }
+    } catch (e) {
+        console.warn(`[YouTubeSearch] youtube-html failed: ${e?.response?.status || e.message}`);
+    }
+
+    // 2) Secondary: Invidious public API instances.
+    const invidiousInstances = [
+        'https://invidious.fdn.fr',
+        'https://invidious.privacyredirect.com',
+        'https://inv.nadeko.net',
+    ];
+
+    for (const instance of invidiousInstances) {
+        try {
+            const apiUrl = `${instance}/api/v1/search?q=${encodeURIComponent(rawQ)}&type=video&sort=relevance`;
+            const invResp = await gigaAxios.get(apiUrl, {
+                headers: { 'User-Agent': getRandomUA(), 'Accept': 'application/json' },
+                timeout: 9000,
+            });
+
+            const arr = Array.isArray(invResp.data) ? invResp.data : [];
+            const ids = uniqueIds(arr.map(item => item?.videoId).filter(Boolean));
+            if (ids.length > 0) {
+                return res.json({ videoIds: ids, source: `invidious:${instance}` });
+            }
+        } catch (e) {
+            console.warn(`[YouTubeSearch] invidious failed (${instance}): ${e?.response?.status || e.message}`);
+        }
+    }
+
+    return res.json({ videoIds: [], source: 'none' });
+});
+
 // --- GIGA API ENDPOINTS ---
 
 // Progress stub — returns empty array so MovieCard doesn't flood the console with 404s
