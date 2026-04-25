@@ -802,6 +802,34 @@ app.get('/api/introdb/subtitles', async (req, res) => {
     }
 });
 
+// YouTube Caption Proxy — bypasses browser CORS on timedtext API
+app.get('/api/youtube/captions', async (req, res) => {
+    const { videoId, lang = 'en', tlang } = req.query;
+    if (!videoId) return res.status(400).json({ error: 'videoId required' });
+    try {
+        const params = new URLSearchParams({ v: String(videoId), lang: String(lang), fmt: 'vtt' });
+        if (tlang) params.set('tlang', String(tlang));
+        const url = `https://www.youtube.com/api/timedtext?${params.toString()}`;
+        const response = await gigaAxios.get(url, {
+            headers: {
+                'User-Agent': getRandomUA(),
+                'Accept-Language': 'en-US,en;q=0.9',
+            },
+            timeout: 8000,
+            responseType: 'text',
+        });
+        if (!response.data || String(response.data).trim() === '') {
+            return res.status(404).json({ error: 'No captions available for this video' });
+        }
+        res.set('Content-Type', 'text/vtt; charset=UTF-8');
+        res.set('Cache-Control', 'public, max-age=86400');
+        return res.send(response.data);
+    } catch (e) {
+        console.warn(`[YTCaptions] ${e?.response?.status || e.message} for videoId=${videoId}`);
+        return res.status(404).json({ error: 'Captions unavailable' });
+    }
+});
+
 // --- GIGA API ENDPOINTS ---
 
 // Progress stub — returns empty array so MovieCard doesn't flood the console with 404s
@@ -811,7 +839,7 @@ app.get('/api/profiles/:profileId/progress/:movieId', (req, res) => {
 });
 
 app.get('/api/stream', async (req, res) => {
-    const { tmdbId, type, season, episode, imdbId, title, year } = req.query;
+    const { tmdbId, type, season, episode, imdbId, title, year, force } = req.query;
     if (!tmdbId || !type) return res.status(400).json({ success: false, error: 'tmdbId and type are required' });
     try {
         const reqProto = req.headers['x-forwarded-proto'] || 'https';
@@ -824,7 +852,17 @@ app.get('/api/stream', async (req, res) => {
         const STREAM_CACHE_TTL_DEFAULT = 90; // seconds
         const STREAM_CACHE_TTL_TOKENIZED = 15; // seconds
         const redisCacheKey = `stream:${tmdbId}:${type}:${season || 1}:${episode || 1}`;
-        if (redis) {
+
+        // ?force=1 → client has confirmed the cached result is dead (403/410).
+        // Delete it from Redis so the fresh resolve doesn't immediately re-serve it.
+        if (force && redis) {
+            try {
+                await redis.del(redisCacheKey);
+                console.log(`[Backend Cache] 🗑️ Force-busted Redis key: ${redisCacheKey}`);
+            } catch (_) {}
+        }
+
+        if (redis && !force) {
             try {
                 const cached = await redis.get(redisCacheKey);
                 if (cached) {

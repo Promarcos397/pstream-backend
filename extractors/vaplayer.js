@@ -41,11 +41,15 @@ export async function extractVaPlayer({ tmdbId, type, season, episode } = {}) {
 
     const { stream_urls, default_subs = [] } = data.data;
 
-    // Map each mirror URL to a source — all proxied (CDN is not IP-locked)
+    // Map each mirror URL to a source.
+    // noProxy: true — VaPlayer CDN (digitalassetlaunchpad.site, startupmomentumengine.site)
+    // actively blocks HF datacenter IPs even with the correct Referer/Origin headers.
+    // The user's residential browser IP is NOT blocked, so direct playback works.
     const sources = stream_urls.map((url, i) => ({
         url,
         quality: i === stream_urls.length - 1 ? 'auto' : '1080p',
         isM3U8: true,
+        noProxy: true,
         referer: REFERER,
         provider: `VaPlayer Mirror ${i + 1}`,
     }));
