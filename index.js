@@ -11,7 +11,7 @@ import { getProfile, updateProfile, deleteProfile } from './utils/db.js';
 import { resolveStreaming } from './resolver.js';
 import { USER_AGENTS, getRandomUA } from './utils/constants.js';
 import Redis from 'ioredis';
-import { recordProviderError, recordProviderSuccess, getAllProviderHealth } from './services/providerHealth.js';
+import { recordProviderError, recordProviderSuccess, getAllProviderHealth, canonicalProviderId } from './services/providerHealth.js';
 dotenv.config();
 // BUILD: 2026-04-16T06:50Z � SuperEmbed Stage1A, proxy?gigaAxios, raceExtractors v14.1
 
@@ -835,6 +835,8 @@ app.get('/api/youtube/captions', async (req, res) => {
 const ytSearchCache = new Map();
 const YT_SEARCH_CACHE_TTL_MS = 10 * 60 * 1000;
 const YT_SEARCH_EMPTY_TTL_MS = 2 * 60 * 1000;
+let ytSearchCircuitOpenUntil = 0;
+const YT_SEARCH_CIRCUIT_MS = 60 * 1000;
 
 // YouTube Search Proxy — no API key required fallback for trailer search.
 // Returns only video IDs to keep payload small and stable.
@@ -851,6 +853,9 @@ app.get('/api/youtube/search', async (req, res) => {
     const cacheHit = ytSearchCache.get(cacheKey);
     if (cacheHit && cacheHit.expiresAt > Date.now()) {
         return res.json(cacheHit.payload);
+    }
+    if (Date.now() < ytSearchCircuitOpenUntil) {
+        return res.json(putCache({ videoIds: [], source: 'circuit-open' }, 15 * 1000));
     }
 
     const uniqueIds = (ids) => [...new Set((ids || []).filter(id => /^[A-Za-z0-9_-]{11}$/.test(id)))].slice(0, maxResults);
@@ -935,6 +940,7 @@ app.get('/api/youtube/search', async (req, res) => {
         }
     }
 
+    ytSearchCircuitOpenUntil = Date.now() + YT_SEARCH_CIRCUIT_MS;
     return res.json(putCache({ videoIds: [], source: 'none' }, YT_SEARCH_EMPTY_TTL_MS));
 });
 
@@ -1146,9 +1152,10 @@ app.delete('/api/sync', authenticateToken, async (req, res) => {
 // Frontend calls this when HLS.js fires a fatal error on a stream
 app.post('/api/stream/report-error', async (req, res) => {
     try {
-        const { provider, tmdbId, type, season, episode, error, errorCode } = req.body;
-        if (!provider) return res.status(400).json({ error: 'Missing provider' });
-        await recordProviderError(provider, { tmdbId, type, error, errorCode });
+        const { provider, providerId, tmdbId, type, season, episode, error, errorCode } = req.body;
+        const normalizedProvider = canonicalProviderId(providerId || provider);
+        if (!normalizedProvider) return res.status(400).json({ error: 'Missing provider' });
+        await recordProviderError(normalizedProvider, { tmdbId, type, error, errorCode });
         if (redis && tmdbId && type) {
             const key = `stream:${tmdbId}:${type}:${season || 1}:${episode || 1}`;
             try {
@@ -1156,7 +1163,7 @@ app.post('/api/stream/report-error', async (req, res) => {
                 console.log(`[HealthReport] Cache cleared: ${key}`);
             } catch (_) {}
         }
-        console.log(`[HealthReport] Error reported for ${provider}: ${error || errorCode}`);
+        console.log(`[HealthReport] Error reported for ${normalizedProvider}: ${error || errorCode}`);
         res.json({ success: true });
     } catch (e) {
         res.json({ success: false }); // Non-critical, always return 200-ish
@@ -1166,8 +1173,9 @@ app.post('/api/stream/report-error', async (req, res) => {
 // Frontend calls this when a stream plays successfully (positive signal)
 app.post('/api/stream/report-success', async (req, res) => {
     try {
-        const { provider } = req.body;
-        if (provider) await recordProviderSuccess(provider);
+        const { provider, providerId } = req.body;
+        const normalizedProvider = canonicalProviderId(providerId || provider);
+        if (normalizedProvider) await recordProviderSuccess(normalizedProvider);
         res.json({ success: true });
     } catch (e) {
         res.json({ success: false });

@@ -50,6 +50,7 @@ export async function extractVaPlayer({ tmdbId, type, season, episode } = {}) {
         isM3U8: true,
         referer: REFERER,
         provider: `VaPlayer Mirror ${i + 1}`,
+        providerId: 'vaplayer',
     }));
 
     // Map subtitles if present
@@ -64,6 +65,7 @@ export async function extractVaPlayer({ tmdbId, type, season, episode } = {}) {
     return {
         success: true,
         provider: 'VaPlayer 🎯',
+        providerId: 'vaplayer',
         sources,
         subtitles,
     };

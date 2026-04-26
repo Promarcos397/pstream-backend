@@ -25,11 +25,29 @@ const DEPRIORITIZE_THRESHOLD = 50;
 const SUSPEND_TTL = 30 * 60; // 30 minutes
 const HEALTH_TTL = 24 * 60 * 60; // 24 hours
 
+const PROVIDER_ALIASES = [
+    { id: 'vixsrc', test: /vixsrc/i },
+    { id: 'vaplayer', test: /vaplayer/i },
+    { id: 'vidzee', test: /vidzee/i },
+    { id: 'vidsrc_ru', test: /vidsrc\.?ru|vsembed/i },
+    { id: 'lookmovie', test: /lookmovie/i },
+    { id: 'primesrc', test: /primesrc/i },
+];
+
+export function canonicalProviderId(name) {
+    const raw = String(name || '').trim().toLowerCase();
+    if (!raw) return 'unknown';
+    for (const alias of PROVIDER_ALIASES) {
+        if (alias.test.test(raw)) return alias.id;
+    }
+    return raw.replace(/[^a-z0-9]/g, '_');
+}
+
 /**
  * Normalize provider name to a stable Redis key
  */
 function providerKey(name) {
-    return name.toLowerCase().replace(/[^a-z0-9]/g, '_');
+    return canonicalProviderId(name);
 }
 
 /**

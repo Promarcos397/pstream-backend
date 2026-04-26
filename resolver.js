@@ -92,13 +92,13 @@ function collectExtractorResults(extractors, timeoutMs, graceAfterFirstMs = 1200
             finalize();
         }, timeoutMs);
 
-        const done = (result, providerName, startTs) => {
+        const done = (result, providerName, providerId, startTs) => {
             if (resolved) return;
             const elapsed = Date.now() - startTs;
 
             if (result?.success && result.sources?.length && !result.sources.every(s => s.isEmbed)) {
                 firstSuccessSeen = true;
-                successes.push({ ...result, _elapsedMs: elapsed, _providerName: providerName });
+                successes.push({ ...result, _elapsedMs: elapsed, _providerName: providerName, _providerId: providerId });
                 console.log(`[Race] ✅ ${result.provider || providerName} in ${elapsed}ms`);
 
                 if (!graceTimer) {
@@ -116,10 +116,10 @@ function collectExtractorResults(extractors, timeoutMs, graceAfterFirstMs = 1200
         extractors.forEach(({ run, name }, i) => {
             const start = Date.now();
             run().then(
-            result => done(result, name || `extractor[${i}]`, start),
+            result => done(result, name || `extractor[${i}]`, extractors[i].id || name || `extractor[${i}]`, start),
             err => {
                 console.warn(`[Race] ✗ ${name || `extractor[${i}]`} threw: ${err?.message || err}`);
-                done(null, name || `extractor[${i}]`, start);
+                done(null, name || `extractor[${i}]`, extractors[i].id || name || `extractor[${i}]`, start);
             }
             );
         });
@@ -154,11 +154,11 @@ export async function resolveStreaming(tmdbId, type, season, episode, title, yea
     // noProxy sources: VidSrc.ru (noProxy already in extractor), VixSrc (set below).
     // VidZee CDN (neonhorizonworkshops etc) blocks HF IPs → noProxy=true in vidzee.js.
     const providers = [
-        { name: 'VixSrc', run: () => scrapeVixSrc(tmdbId, type, season, episode) },
-        { name: 'VaPlayer', run: () => extractVaPlayer({ tmdbId, type, season, episode }) },
-        { name: 'VidZee', run: () => scrapeVidZee(tmdbId, type, season, episode) },
-        { name: 'VidSrc.ru', run: () => scrapeVidSrcRu(tmdbId, type, season, episode) },
-        { name: 'LookMovie', run: () => scrapeLookMovie(tmdbId, type === 'movie' ? 'movie' : 'show', season, episode, title, year) },
+        { id: 'vixsrc', name: 'VixSrc', run: () => scrapeVixSrc(tmdbId, type, season, episode) },
+        { id: 'vaplayer', name: 'VaPlayer', run: () => extractVaPlayer({ tmdbId, type, season, episode }) },
+        { id: 'vidzee', name: 'VidZee', run: () => scrapeVidZee(tmdbId, type, season, episode) },
+        { id: 'vidsrc_ru', name: 'VidSrc.ru', run: () => scrapeVidSrcRu(tmdbId, type, season, episode) },
+        { id: 'lookmovie', name: 'LookMovie', run: () => scrapeLookMovie(tmdbId, type === 'movie' ? 'movie' : 'show', season, episode, title, year) },
     ];
     const healthyProviders = await filterByHealth(providers);
     const activeProviders = healthyProviders.length ? healthyProviders : providers;
@@ -181,7 +181,8 @@ export async function resolveStreaming(tmdbId, type, season, episode, title, yea
                 sourceSeen.add(key);
                 mergedSources.push({
                     ...src,
-                    provider: src.provider || result.provider || result._providerName || 'unknown'
+                    provider: src.provider || result.provider || result._providerName || 'unknown',
+                    providerId: src.providerId || result._providerId || 'unknown'
                 });
             }
             for (const sub of (result.subtitles || [])) {
@@ -195,6 +196,7 @@ export async function resolveStreaming(tmdbId, type, season, episode, title, yea
         const mergedResult = {
             ...winner,
             provider: winner.provider || winner._providerName,
+            providerId: winner._providerId || 'unknown',
             sources: mergedSources,
             subtitles
         };
