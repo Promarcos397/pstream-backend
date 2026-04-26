@@ -940,6 +940,30 @@ app.get('/api/youtube/search', async (req, res) => {
 
 // --- GIGA API ENDPOINTS ---
 
+function sanitizeNoProxySources(sources = []) {
+    const forceProxyHostPatterns = [
+        /creativeentrepreneurhub\.site$/i,
+        /digitalassetlaunchpad\.site$/i,
+        /startupmomentumengine\.site$/i,
+    ];
+
+    return (sources || []).map((source) => {
+        if (!source) return source;
+        const provider = String(source.provider || '').toLowerCase();
+        const rawUrl = String(source.url || '');
+        let host = '';
+        try { host = new URL(rawUrl).hostname; } catch (_) {}
+
+        const isVaPlayer = provider.includes('vaplayer');
+        const hostNeedsProxy = forceProxyHostPatterns.some((p) => p.test(host));
+
+        if (source.noProxy && (isVaPlayer || hostNeedsProxy)) {
+            return { ...source, noProxy: false };
+        }
+        return source;
+    });
+}
+
 // Progress stub — returns empty array so MovieCard doesn't flood the console with 404s
 // (Full watch-progress persistence is handled client-side via localStorage)
 app.get('/api/profiles/:profileId/progress/:movieId', (req, res) => {
@@ -993,6 +1017,7 @@ app.get('/api/stream', async (req, res) => {
                             return { ...source, directManifest: rewritten, cachedManifest: undefined };
                         });
                     }
+                    streamData.sources = sanitizeNoProxySources(streamData.sources || []);
                     return res.json(streamData);
                     }
                 }
@@ -1011,6 +1036,7 @@ app.get('/api/stream', async (req, res) => {
                 const rewritten = rewriteFullProxyManifest(source.cachedManifest, baseUrl, reqProto, reqHost, source.referer || '');
                 return { ...source, directManifest: rewritten, cachedManifest: undefined };
             });
+            streamData.sources = sanitizeNoProxySources(streamData.sources);
         }
 
         // ── Write to Redis if success ────────────────────────────────────────
