@@ -48,15 +48,26 @@ export async function extractVaPlayer({ tmdbId, type, season, episode } = {}) {
         url,
         quality: i === stream_urls.length - 1 ? 'auto' : '1080p',
         isM3U8: true,
-        // noProxy: true — VaPlayer CDN rotates disposable domains (wealthcreationmethod.site,
-        // brightpathsignals.com, nicheauthorityengine.site etc.) that consistently block
-        // HF datacenter IPs. Browser residential IP is NOT blocked. CORS is handled by the
-        // cdn serving Access-Control-Allow-Origin or by HLS.js credentials mode.
+        // noProxy: true — VaPlayer CDN rotates disposable domains (personalbrandgrowth.site,
+        // wealthcreationmethod.site etc.) that block HF datacenter IPs AND have no CORS headers.
+        // JustHD (tmstrd.justhd.tv) is the exception: it has CORS headers + doesn't block HF IPs.
+        // Browser residential IP + noProxy works for JustHD but CORS-fails on the other domains.
         noProxy: true,
         referer: REFERER,
         provider: `VaPlayer Mirror ${i + 1}`,
         providerId: 'vaplayer',
     }));
+
+    // Sort so JustHD (tmstrd.justhd.tv) comes first — it has proper CORS headers.
+    // The rotating disposable CDN domains (personalbrandgrowth.site, wealthcreationmethod.site etc.)
+    // have no CORS headers so direct browser fetches fail with status 0. JustHD is the safe primary.
+    sources.sort((a, b) => {
+        const aIsJustHD = a.url.includes('justhd.tv');
+        const bIsJustHD = b.url.includes('justhd.tv');
+        if (aIsJustHD && !bIsJustHD) return -1;
+        if (bIsJustHD && !aIsJustHD) return 1;
+        return 0;
+    });
 
     // Map subtitles if present
     const subtitles = (default_subs || []).map(sub => ({
