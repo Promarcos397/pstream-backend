@@ -1077,8 +1077,10 @@ app.get('/api/stream', async (req, res) => {
         if (redis && streamData?.success && hasRealSources) {
             try {
                 const providers = (streamData.sources || []).map(s => `${s.provider || ''}`.toLowerCase());
-                // VaPlayer tokens are short-lived; VixSrc removed but keep pattern for safety
-                const hasFragileProvider = providers.some(p => p.includes('vaplayer'));
+                // VaPlayer + VidZee both use short-lived signed tokens (CDN/Cloudflare Worker URLs).
+                // Workers.dev URLs also carry signed tokens that expire in minutes.
+                const hasFragileProvider = providers.some(p => p.includes('vaplayer') || p.includes('vidzee'))
+                    || (streamData.sources || []).some(s => /workers\.dev/i.test(s.url || ''));
                 const ttl = hasFragileProvider ? STREAM_CACHE_TTL_TOKENIZED : STREAM_CACHE_TTL_DEFAULT;
                 const cachePayload = {
                     data: streamData,
