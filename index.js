@@ -500,9 +500,13 @@ app.get('/proxy/stream', async (req, res) => {
 
         // Fast-fail: CDN domains that block HF datacenter IPs — these return 403 from our proxy
         // nicheauthorityengine.site / brightpathsignals.com = VaPlayer CDNs (confirmed 403 in prod logs 2026-04-24)
+        // VaPlayer rotates disposable CDN domains — all block HF datacenter IPs.
+        // Add each new domain here as they rotate so the proxy fast-fails
+        // (returning CDN_BLOCK) rather than waiting for a 403 upstream.
         const CDN_BLOCKLIST = [
             'neonhorizonworkshops.com','wanderlynest.com','orchidpixelgardens.com','zebi.xalaflix.design',
             'nicheauthorityengine.site','brightpathsignals.com',
+            'wealthcreationmethod.site',
         ];
         try {
             const targetHost = new URL(targetUrl).hostname;
@@ -947,6 +951,8 @@ app.get('/api/youtube/search', async (req, res) => {
 // --- GIGA API ENDPOINTS ---
 
 function sanitizeNoProxySources(sources = []) {
+    // These old patterns once needed force-proxy but are now in the CDN_BLOCKLIST;
+    // keeping the array for any future host-level overrides if needed.
     const forceProxyHostPatterns = [
         /creativeentrepreneurhub\.site$/i,
         /digitalassetlaunchpad\.site$/i,
@@ -955,15 +961,15 @@ function sanitizeNoProxySources(sources = []) {
 
     return (sources || []).map((source) => {
         if (!source) return source;
-        const provider = String(source.provider || '').toLowerCase();
         const rawUrl = String(source.url || '');
         let host = '';
         try { host = new URL(rawUrl).hostname; } catch (_) {}
 
-        const isVaPlayer = provider.includes('vaplayer');
+        // NOTE: VaPlayer override (isVaPlayer → noProxy=false) intentionally REMOVED.
+        // VaPlayer CDN domains block HF datacenter IPs, so the proxy was causing 403s.
+        // noProxy:true (browser-direct) is the correct mode for VaPlayer.
         const hostNeedsProxy = forceProxyHostPatterns.some((p) => p.test(host));
-
-        if (source.noProxy && (isVaPlayer || hostNeedsProxy)) {
+        if (source.noProxy && hostNeedsProxy) {
             return { ...source, noProxy: false };
         }
         return source;

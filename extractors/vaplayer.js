@@ -48,6 +48,11 @@ export async function extractVaPlayer({ tmdbId, type, season, episode } = {}) {
         url,
         quality: i === stream_urls.length - 1 ? 'auto' : '1080p',
         isM3U8: true,
+        // noProxy: true — VaPlayer CDN rotates disposable domains (wealthcreationmethod.site,
+        // brightpathsignals.com, nicheauthorityengine.site etc.) that consistently block
+        // HF datacenter IPs. Browser residential IP is NOT blocked. CORS is handled by the
+        // cdn serving Access-Control-Allow-Origin or by HLS.js credentials mode.
+        noProxy: true,
         referer: REFERER,
         provider: `VaPlayer Mirror ${i + 1}`,
         providerId: 'vaplayer',
