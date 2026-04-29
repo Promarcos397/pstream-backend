@@ -58,8 +58,9 @@ async function getDerivedKey() {
     if (_cachedDecryptKey && now < _cacheExpiry) return _cachedDecryptKey;
 
     try {
-        // NOTE: raised from 6s → 15s because the proxy chain adds 8-12s latency
-        const { data: encKeyB64 } = await gigaAxios.get(KEY_API, { headers: HEADERS, timeout: 15000 });
+        // Fail fast to KNOWN_FALLBACK_KEY if the key API is slow. The fallback is valid
+        // and there's no reason to block the race for 15s waiting for a key that rarely changes.
+        const { data: encKeyB64 } = await gigaAxios.get(KEY_API, { headers: HEADERS, timeout: 6000 });
         const buf = Buffer.from(encKeyB64.trim(), 'base64');
 
         const iv         = buf.slice(0, 12);
