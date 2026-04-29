@@ -8,7 +8,7 @@ import fs from 'fs';
 import os from 'os';
 import { createChallenge, verifyChallenge } from './utils/challenge.js';
 import { getProfile, updateProfile, deleteProfile } from './utils/db.js';
-import { resolveStreaming } from './resolver.js';
+import { resolveStreaming, diagnoseProviders } from './resolver.js';
 import { USER_AGENTS, getRandomUA } from './utils/constants.js';
 import Redis from 'ioredis';
 import { recordProviderError, recordProviderSuccess, getAllProviderHealth, canonicalProviderId } from './services/providerHealth.js';
@@ -212,21 +212,21 @@ app.get('/api/ping', (req, res) => {
 app.get('/api/debug-providers', async (req, res) => {
     const { tmdbId = '637', type = 'movie', season = '1', episode = '1' } = req.query;
 
-    // Import active resolver extractors (legacy/dead providers removed)
+    // Import active resolver extractors (VixSrc removed — blocking datacenter IPs 2026-04)
     const [
-        { scrapeVixSrc },
         { extractVaPlayer },
         { scrapeVidZee },
         { scrapeVidSrc: scrapeVidSrcRu },
         { scrapeLookMovie },
         { scrapePrimeSrc },
+        { scrapeVidSrcMe },
     ] = await Promise.all([
-        import('./extractors/vixsrc.js'),
         import('./extractors/vaplayer.js'),
         import('./extractors/vidzee.js'),
         import('./extractors/vidsrcru.js'),
         import('./extractors/lookmovie.js'),
         import('./extractors/primesrc.js'),
+        import('./extractors/vidsrcme.js'),
     ]);
 
     // Wrap each extractor to catch and expose errors (normally they silently return null)
@@ -259,12 +259,12 @@ app.get('/api/debug-providers', async (req, res) => {
     };
 
     const results = await Promise.allSettled([
-        test('VixSrc',    () => scrapeVixSrc(tmdbId, type, season, episode)),
         test('VaPlayer',  () => extractVaPlayer({ tmdbId, type, season, episode })),
         test('VidZee',    () => scrapeVidZee(tmdbId, type, season, episode)),
         test('VidSrc.ru', () => scrapeVidSrcRu(tmdbId, type, season, episode)),
         test('LookMovie', () => scrapeLookMovie(tmdbId, type === 'movie' ? 'movie' : 'show', season, episode, req.query.title || '', req.query.year || '')),
         test('PrimeSrc',  () => scrapePrimeSrc(tmdbId, type, season, episode)),
+        test('VidSrc.me', () => scrapeVidSrcMe(tmdbId, type, season, episode)),
     ]);
 
     res.json({ tmdbId, type, results: results.map(r => r.value || { error: r.reason?.message }) });
@@ -280,12 +280,12 @@ app.get('/healthcheck', async (req, res) => {
     const uptime = Math.floor(process.uptime());
 
     const providers = [
-        { name: 'VixSrc', url: 'https://vixsrc.to' },
         { name: 'VaPlayer', url: 'https://streamdata.vaplayer.ru' },
         { name: 'VidZee', url: 'https://player.vidzee.wtf' },
         { name: 'VidSrc.ru', url: 'https://vsembed.ru' },
         { name: 'LookMovie API', url: 'https://lmscript.xyz' },
-        { name: 'PrimeSrc', url: 'https://primesrc.me' }
+        { name: 'PrimeSrc', url: 'https://primesrc.me' },
+        { name: 'VidSrc.me', url: 'https://vidsrcme.ru' },
     ];
     const probeProvider = async (provider) => {
         const started = Date.now();
@@ -976,6 +976,24 @@ app.get('/api/profiles/:profileId/progress/:movieId', (req, res) => {
     res.json([]);
 });
 
+// --- DIAGNOSE ENDPOINT (per-provider diagnostic report) ---
+// GET /api/stream/diagnose?tmdbId=637&type=movie[&season=1&episode=1&title=Maverick&year=2022]
+// Runs EVERY provider individually (no short-circuit) — takes up to 25s.
+// Returns full per-provider status, failure reasons, source previews.
+// Use this to understand exactly which providers are working and why.
+app.get('/api/stream/diagnose', async (req, res) => {
+    const { tmdbId, type, season = '1', episode = '1', title = '', year = '' } = req.query;
+    if (!tmdbId || !type) return res.status(400).json({ error: 'tmdbId and type are required' });
+    try {
+        console.log(`[Diagnose] Request for ${title || tmdbId} (${type})`);
+        const report = await diagnoseProviders(tmdbId, type, season, episode, title, year);
+        return res.json({ success: true, ...report });
+    } catch (e) {
+        console.error(`[Diagnose] Fatal error: ${e.message}`);
+        return res.status(500).json({ success: false, error: e.message });
+    }
+});
+
 app.get('/api/stream', async (req, res) => {
     const { tmdbId, type, season, episode, imdbId, title, year, force } = req.query;
     if (!tmdbId || !type) return res.status(400).json({ success: false, error: 'tmdbId and type are required' });
@@ -1046,10 +1064,14 @@ app.get('/api/stream', async (req, res) => {
         }
 
         // ── Write to Redis if success ────────────────────────────────────────
-        if (redis && streamData?.success && streamData?.sources?.length) {
+        // Only cache if we have real M3U8 sources. Embedding iframes (isEmbed=true)
+        // must NOT be cached — they are often session-bound or short-lived URLs.
+        const hasRealSources = streamData?.sources?.some(s => s.isM3U8 && !s.isEmbed);
+        if (redis && streamData?.success && hasRealSources) {
             try {
                 const providers = (streamData.sources || []).map(s => `${s.provider || ''}`.toLowerCase());
-                const hasFragileProvider = providers.some(p => p.includes('vixsrc') || p.includes('vaplayer'));
+                // VaPlayer tokens are short-lived; VixSrc removed but keep pattern for safety
+                const hasFragileProvider = providers.some(p => p.includes('vaplayer'));
                 const ttl = hasFragileProvider ? STREAM_CACHE_TTL_TOKENIZED : STREAM_CACHE_TTL_DEFAULT;
                 const cachePayload = {
                     data: streamData,

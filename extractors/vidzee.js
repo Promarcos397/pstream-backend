@@ -137,12 +137,12 @@ async function fetchServer(tmdbId, srId, type, season, episode) {
 export async function scrapeVidZee(tmdbId, type, season, episode) {
     try {
         // Run key fetch and server discovery in parallel to save time
-        const [decryptKey, availableSrIds] = await Promise.all([
+        let [decryptKey, availableSrIds] = await Promise.all([
             getDerivedKey(),
             getAvailableServers(tmdbId, type, season, episode),
         ]);
 
-        console.log(`[VidZee] Available servers: [${availableSrIds.join(',')}]`);
+        console.log(`[VidZee] Available servers: [${availableSrIds.join(',')}] | key="${decryptKey?.substring(0,8)}..."`);
 
         // Fetch all available servers in parallel
         const results = await Promise.allSettled(
@@ -150,7 +150,8 @@ export async function scrapeVidZee(tmdbId, type, season, episode) {
         );
 
         const subtitleMap = new Map();
-        const allUrls = [];
+        let allUrls = [];
+        let totalLinks = 0;
 
         for (const result of results) {
             if (result.status !== 'fulfilled' || !result.value?.url) continue;
@@ -170,16 +171,44 @@ export async function scrapeVidZee(tmdbId, type, season, episode) {
             // Decrypt URLs from each server
             for (const su of (streamUrls || [])) {
                 if (!su.link) continue;
+                totalLinks++;
                 const decrypted = decryptUrl(su.link, decryptKey);
                 if (decrypted) allUrls.push(decrypted);
             }
         }
 
+        console.log(`[VidZee] ${totalLinks} encrypted link(s) found, ${allUrls.length} decrypted`);
+
+        // ── Key rotation detection ───────────────────────────────────────────
+        // If we found server data but all decryptions failed, the cached key has rotated.
+        // Force-bust the cache and retry with a fresh fetch from /api-key.
+        if (totalLinks > 0 && allUrls.length === 0) {
+            console.warn(`[VidZee] ⚠️  ALL ${totalLinks} decryptions failed — key likely rotated. Busting cache and retrying...`);
+            _cachedDecryptKey = null;
+            _cacheExpiry = 0;
+
+            const freshKey = await getDerivedKey();
+            if (freshKey !== decryptKey) {
+                console.log(`[VidZee] 🔑 Fresh key fetched: "${freshKey?.substring(0,8)}..." — retrying decryption`);
+                allUrls = [];
+                for (const result of results) {
+                    if (result.status !== 'fulfilled' || !result.value?.url) continue;
+                    for (const su of (result.value.url || [])) {
+                        if (!su.link) continue;
+                        const decrypted = decryptUrl(su.link, freshKey);
+                        if (decrypted) allUrls.push(decrypted);
+                    }
+                }
+                console.log(`[VidZee] After key rotation retry: ${allUrls.length} stream(s) decrypted`);
+            } else {
+                console.warn('[VidZee] Fresh key identical to cached key — decryption format may have changed');
+            }
+        }
+
         const uniqueUrls = [...new Set(allUrls)];
-        console.log(`[VidZee] Decrypted ${uniqueUrls.length} unique stream URLs`);
 
         if (uniqueUrls.length === 0) {
-            console.warn('[VidZee] No streams decrypted — key may have rotated');
+            console.warn('[VidZee] ❌ No streams decrypted after all attempts — provider may be down or format changed');
             return null;
         }
 

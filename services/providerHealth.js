@@ -26,12 +26,12 @@ const SUSPEND_TTL = 30 * 60; // 30 minutes
 const HEALTH_TTL = 24 * 60 * 60; // 24 hours
 
 const PROVIDER_ALIASES = [
-    { id: 'vixsrc', test: /vixsrc/i },
     { id: 'vaplayer', test: /vaplayer/i },
     { id: 'vidzee', test: /vidzee/i },
     { id: 'vidsrc_ru', test: /vidsrc\.?ru|vsembed/i },
     { id: 'lookmovie', test: /lookmovie/i },
     { id: 'primesrc', test: /primesrc/i },
+    { id: 'vidsrcme', test: /vidsrcme|vidsrc-me/i },
 ];
 
 export function canonicalProviderId(name) {
@@ -128,7 +128,7 @@ export async function recordProviderError(providerName, errorContext = {}) {
 export async function getAllProviderHealth() {
     try {
         const providers = [
-            'vixsrc', 'vaplayer', 'vidsrc_ru', 'vidzee', 'lookmovie', 'primesrc'
+            'vaplayer', 'vidsrc_ru', 'vidzee', 'lookmovie', 'primesrc', 'vidsrcme'
         ];
         const result = {};
         for (const p of providers) {
