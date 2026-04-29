@@ -809,11 +809,15 @@ app.get('/api/introdb/subtitles', async (req, res) => {
 
 // YouTube Caption Proxy — bypasses browser CORS on timedtext API
 app.get('/api/youtube/captions', async (req, res) => {
-    const { videoId, lang = 'en', tlang } = req.query;
+    const { videoId, lang = 'en', tlang, kind, name } = req.query;
     if (!videoId) return res.status(400).json({ error: 'videoId required' });
     try {
         const params = new URLSearchParams({ v: String(videoId), lang: String(lang), fmt: 'vtt' });
         if (tlang) params.set('tlang', String(tlang));
+        // kind=asr fetches auto-generated captions (most common on trailers/informal uploads)
+        if (kind) params.set('kind', String(kind));
+        // name disambiguates between multiple tracks in the same language
+        if (name) params.set('name', String(name));
         const url = `https://www.youtube.com/api/timedtext?${params.toString()}`;
         // Use plain axios transport for YouTube endpoints to avoid proxy/TLS chain
         // instability observed in HF logs for this specific host.
@@ -821,6 +825,8 @@ app.get('/api/youtube/captions', async (req, res) => {
             headers: {
                 'User-Agent': getRandomUA(),
                 'Accept-Language': 'en-US,en;q=0.9',
+                // Avoid YouTube's CONSENT redirect on EU IPs
+                'Cookie': 'CONSENT=YES+cb; YSC=; VISITOR_INFO1_LIVE=',
             },
             timeout: 15000,
             responseType: 'text',
