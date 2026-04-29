@@ -506,7 +506,8 @@ app.get('/proxy/stream', async (req, res) => {
         const CDN_BLOCKLIST = [
             'neonhorizonworkshops.com','wanderlynest.com','orchidpixelgardens.com','zebi.xalaflix.design',
             'nicheauthorityengine.site','brightpathsignals.com',
-            'wealthcreationmethod.site',
+            'wealthcreationmethod.site','personalbrandgrowth.site',
+            // VaPlayer rotates CDN domains — add new ones here as they appear in prod logs
         ];
         try {
             const targetHost = new URL(targetUrl).hostname;
