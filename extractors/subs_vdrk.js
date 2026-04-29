@@ -8,7 +8,7 @@ export async function scrapeVdrkCaptions(tmdbId, type, season, episode) {
 
         console.log(`[VDRK] Searching external subtitles: ${url}`);
         
-        const response = await proxyAxios.get(url, { timeout: 8000 });
+        const response = await proxyAxios.get(url, { timeout: 5000 });
         const data = response.data;
 
         if (!Array.isArray(data)) {

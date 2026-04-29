@@ -234,10 +234,17 @@ export async function resolveStreaming(tmdbId, type, season, episode, title, yea
 
     const mergeSubtitles = async (result) => {
         if (!result) return result;
-        const externalSubs = await externalSubsPromise;
-        if (externalSubs?.length) {
-            result.subtitles = [...(result.subtitles || []), ...externalSubs];
-        }
+        // Cap subtitle wait at 2s — subs are bonus content, never block stream delivery.
+        // If VDRK is slow (proxy chain adds 8-12s latency), skip and return stream immediately.
+        try {
+            const externalSubs = await Promise.race([
+                externalSubsPromise,
+                new Promise(resolve => setTimeout(() => resolve([]), 2000))
+            ]);
+            if (externalSubs?.length) {
+                result.subtitles = [...(result.subtitles || []), ...externalSubs];
+            }
+        } catch (_) {}
         return result;
     };
 
