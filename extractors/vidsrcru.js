@@ -13,11 +13,17 @@
  */
 import { proxyAxios, gigaAxios } from '../utils/http.js';
 
-// Try these domains in order — vidsrc.domains tracks which are live
+// Try these domains in order — vidsrc.domains tracks which are live.
+// More mirrors = higher chance of at least one working from HF datacenter IPs.
 const EMBED_BASES = [
     'https://vsembed.ru',
     'https://vidsrc-embed.ru',
     'https://vidsrc-embed.su',
+    'https://vidsrc.stream',
+    'https://vidsrc.net',
+    'https://vidsrc.pm',
+    'https://vidsrc.nl',
+    'https://vidsrc.xyz',
 ];
 
 const HEADERS = {

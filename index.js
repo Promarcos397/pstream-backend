@@ -212,28 +212,22 @@ app.get('/api/ping', (req, res) => {
 app.get('/api/debug-providers', async (req, res) => {
     const { tmdbId = '637', type = 'movie', season = '1', episode = '1' } = req.query;
 
-    // Import active resolver extractors (VixSrc removed — blocking datacenter IPs 2026-04)
     const [
         { extractVaPlayer },
         { scrapeVidZee },
         { scrapeVidSrc: scrapeVidSrcRu },
         { scrapeLookMovie },
-        { scrapePrimeSrc },
-        { scrapeVidSrcMe },
+        { scrapeVyla },
     ] = await Promise.all([
         import('./extractors/vaplayer.js'),
         import('./extractors/vidzee.js'),
         import('./extractors/vidsrcru.js'),
         import('./extractors/lookmovie.js'),
-        import('./extractors/primesrc.js'),
-        import('./extractors/vidsrcme.js'),
+        import('./extractors/vyla.js'),
     ]);
 
-    // Wrap each extractor to catch and expose errors (normally they silently return null)
     const test = async (name, fn) => {
         const start = Date.now();
-        let lastError = null;
-        // Temporarily intercept console.warn to capture error messages
         const warns = [];
         const origWarn = console.warn;
         console.warn = (...args) => { warns.push(args.join(' ')); origWarn(...args); };
@@ -243,31 +237,31 @@ app.get('/api/debug-providers', async (req, res) => {
                 new Promise((_, r) => setTimeout(() => r(new Error('TIMEOUT_12s')), 12000))
             ]);
             console.warn = origWarn;
+            const rawSources = (result?.sources || []).filter(s => !s.isEmbed);
             return {
                 name,
-                ok: !!result?.success,
+                ok: !!result?.success && rawSources.length > 0,
                 provider: result?.provider,
-                sources: result?.sources?.length || 0,
+                rawSources: rawSources.length,
+                embedSources: (result?.sources?.length || 0) - rawSources.length,
                 ms: Date.now() - start,
-                warns: warns.slice(-3), // last 3 warnings
+                warns: warns.slice(-3),
             };
         } catch (e) {
             console.warn = origWarn;
-            lastError = e.message;
-            return { name, ok: false, error: lastError, warns: warns.slice(-3), ms: Date.now() - start };
+            return { name, ok: false, error: e.message, warns: warns.slice(-3), ms: Date.now() - start };
         }
     };
 
     const results = await Promise.allSettled([
-        test('VaPlayer',  () => extractVaPlayer({ tmdbId, type, season, episode })),
-        test('VidZee',    () => scrapeVidZee(tmdbId, type, season, episode)),
-        test('VidSrc.ru', () => scrapeVidSrcRu(tmdbId, type, season, episode)),
-        test('LookMovie', () => scrapeLookMovie(tmdbId, type === 'movie' ? 'movie' : 'show', season, episode, req.query.title || '', req.query.year || '')),
-        test('PrimeSrc',  () => scrapePrimeSrc(tmdbId, type, season, episode)),
-        test('VidSrc.me', () => scrapeVidSrcMe(tmdbId, type, season, episode)),
+        test('Vyla Aggregator', () => scrapeVyla(tmdbId, type, season, episode)),
+        test('VaPlayer',        () => extractVaPlayer({ tmdbId, type, season, episode })),
+        test('VidZee',         () => scrapeVidZee(tmdbId, type, season, episode)),
+        test('VidSrc.ru',      () => scrapeVidSrcRu(tmdbId, type, season, episode)),
+        test('LookMovie',      () => scrapeLookMovie(tmdbId, type === 'movie' ? 'movie' : 'show', season, episode, req.query.title || '', req.query.year || '')),
     ]);
 
-    res.json({ tmdbId, type, results: results.map(r => r.value || { error: r.reason?.message }) });
+    res.json({ tmdbId, type, policy: 'no-embed', results: results.map(r => r.value || { error: r.reason?.message }) });
 });
 
 // --- ROUTE: HEALTH CHECK ---
@@ -280,12 +274,12 @@ app.get('/healthcheck', async (req, res) => {
     const uptime = Math.floor(process.uptime());
 
     const providers = [
+        { name: 'Vyla Aggregator', url: 'https://vyla-api.pages.dev' },
         { name: 'VaPlayer', url: 'https://streamdata.vaplayer.ru' },
         { name: 'VidZee', url: 'https://player.vidzee.wtf' },
         { name: 'VidSrc.ru', url: 'https://vsembed.ru' },
         { name: 'LookMovie API', url: 'https://lmscript.xyz' },
-        { name: 'PrimeSrc', url: 'https://primesrc.me' },
-        { name: 'VidSrc.me', url: 'https://vidsrcme.ru' },
+        { name: 'Torrentio', url: 'https://torrentio.strem.fun' },
     ];
     const probeProvider = async (provider) => {
         const started = Date.now();
@@ -1079,14 +1073,17 @@ app.get('/api/stream', async (req, res) => {
         // ── Write to Redis if success ────────────────────────────────────────
         // Only cache if we have real M3U8 sources. Embedding iframes (isEmbed=true)
         // must NOT be cached — they are often session-bound or short-lived URLs.
-        const hasRealSources = streamData?.sources?.some(s => s.isM3U8 && !s.isEmbed);
+        // Cache if we have any real non-embed source (M3U8 OR direct MP4/MKV from Vyla)
+        const hasRealSources = streamData?.sources?.some(s => !s.isEmbed && (s.isM3U8 || s.url));
         if (redis && streamData?.success && hasRealSources) {
             try {
                 const providers = (streamData.sources || []).map(s => `${s.provider || ''}`.toLowerCase());
-                // VaPlayer + VidZee both use short-lived signed tokens (CDN/Cloudflare Worker URLs).
-                // Workers.dev URLs also carry signed tokens that expire in minutes.
-                const hasFragileProvider = providers.some(p => p.includes('vaplayer') || p.includes('vidzee'))
-                    || (streamData.sources || []).some(s => /workers\.dev/i.test(s.url || ''));
+                // Short TTL for providers with signed/expiring tokens:
+                // VaPlayer, VidZee, Vyla/VidZee, Vyla/VixSrc, Cloudflare Workers URLs
+                const hasFragileProvider = providers.some(p =>
+                    p.includes('vaplayer') || p.includes('vidzee') ||
+                    p.includes('vyla/vidzee') || p.includes('vyla/vixsrc')
+                ) || (streamData.sources || []).some(s => /workers\.dev/i.test(s.url || ''));
                 const ttl = hasFragileProvider ? STREAM_CACHE_TTL_TOKENIZED : STREAM_CACHE_TTL_DEFAULT;
                 const cachePayload = {
                     data: streamData,
@@ -1229,6 +1226,131 @@ app.get('/api/providers/health', async (req, res) => {
     }
 });
 
+// ── TORRENTIO PROXY ───────────────────────────────────────────────────────────
+//
+// GET /api/torrent/sources?imdbId=tt1375666&type=movie
+// GET /api/torrent/sources?imdbId=tt0903747&type=series&season=1&episode=1
+//
+// Proxies Torrentio (the open-source Stremio addon) to get magnet links for
+// any IMDB ID. Used by the frontend as a last-resort stream source after all
+// regular providers have failed (and only for authenticated users).
+//
+// Torrentio scans real-time availability from YTS, RARBG, 1337x etc.
+// It returns info_hash (not full magnets) + metadata for quality/seeder count.
+//
+// IMPORTANT: This route only returns metadata (magnets/infoHashes).
+// Actual video streaming happens via /api/torrent/stream (WebTorrent server-side)
+// which is intentionally NOT implemented here yet — it carries HF bandwidth risk.
+// For now, the frontend can use the magnet links with a client-side player
+// or we can implement server-side streaming separately on a dedicated HF space.
+//
+// Rate limited: 30 req/min per IP (Torrentio has generous limits but we respect them)
+
+const torrentioCache = new Map();
+const TORRENTIO_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+app.get('/api/torrent/sources', authenticateToken, async (req, res) => {
+    const { imdbId, type = 'movie', season, episode } = req.query;
+
+    if (!imdbId) return res.status(400).json({ error: 'imdbId required' });
+
+    // Rate limit: 30 requests per minute per user
+    const ip = req.headers['x-forwarded-for']?.split(',')[0] || req.socket.remoteAddress;
+    if (rateLimit(`torrent:${ip}`, 30, 60000)) {
+        return res.status(429).json({ error: 'Too many requests' });
+    }
+
+    // Build Torrentio path
+    // Format: /sort=qualitysize|qualityfilter=720p,1080p,2160p/stream/{type}/{imdbId}.json
+    // For series: /stream/series/{imdbId}:{season}:{episode}.json
+    const qualityFilter = 'qualityfilter=720p,1080p,2160p,4k';
+    const sortMode = 'sort=qualitysize';
+    let streamPath;
+
+    if (type === 'movie' || type === 'film') {
+        streamPath = `stream/movie/${imdbId}.json`;
+    } else {
+        const s = parseInt(season) || 1;
+        const e = parseInt(episode) || 1;
+        streamPath = `stream/series/${imdbId}:${s}:${e}.json`;
+    }
+
+    const torrentioUrl = `https://torrentio.strem.fun/${sortMode}|${qualityFilter}/${streamPath}`;
+    const cacheKey = torrentioUrl;
+
+    // Check cache
+    const cached = torrentioCache.get(cacheKey);
+    if (cached && (Date.now() - cached.ts) < TORRENTIO_CACHE_TTL) {
+        console.log(`[Torrentio] Cache HIT: ${cacheKey}`);
+        return res.json({ success: true, cached: true, ...cached.data });
+    }
+
+    try {
+        console.log(`[Torrentio] Fetching: ${torrentioUrl}`);
+        const response = await gigaAxios.get(torrentioUrl, {
+            timeout: 12000,
+            headers: {
+                'Accept': 'application/json',
+                'User-Agent': getRandomUA(),
+            },
+        });
+
+        const streams = (response.data?.streams || []).map(stream => {
+            // Parse quality from the title field (e.g. "Inception.2010.2160p.BluRay...")
+            const title = stream.title || stream.name || '';
+            const qualityMatch = title.match(/\b(4k|2160p|1080p|720p|480p)\b/i);
+            const quality = qualityMatch ? qualityMatch[1].toLowerCase() : 'unknown';
+
+            // Extract seeder count from behaviorHints or title
+            const seeders = stream.behaviorHints?.videoSize
+                ? Math.floor(stream.behaviorHints.videoSize / 1e8) // rough estimate
+                : null;
+
+            // Build full magnet from infoHash if present
+            const infoHash = stream.infoHash;
+            const magnetLink = infoHash
+                ? `magnet:?xt=urn:btih:${infoHash}&dn=${encodeURIComponent(title)}&tr=udp%3A%2F%2Fopen.demonii.com%3A1337&tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A80&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969&tr=udp%3A%2F%2Fglotorrents.pw%3A6969`
+                : null;
+
+            return {
+                title:     title.split('\n')[0].trim(), // first line = filename
+                quality,
+                infoHash:  infoHash || null,
+                magnet:    magnetLink,
+                fileIdx:   stream.fileIdx ?? 0,
+                seeders,
+                provider:  stream.name || 'Torrentio',
+            };
+        }).filter(s => s.infoHash || s.magnet); // only return usable sources
+
+        // Sort by quality
+        const qualityRank = { '4k': 0, '2160p': 0, '1080p': 1, '720p': 2, '480p': 3, 'unknown': 4 };
+        streams.sort((a, b) => (qualityRank[a.quality] ?? 4) - (qualityRank[b.quality] ?? 4));
+
+        const result = {
+            streams,
+            total:   streams.length,
+            imdbId,
+            type,
+        };
+
+        torrentioCache.set(cacheKey, { ts: Date.now(), data: result });
+
+        console.log(`[Torrentio] ✅ ${streams.length} sources for ${imdbId} (${type})`);
+        return res.json({ success: true, ...result });
+
+    } catch (e) {
+        console.warn(`[Torrentio] Error: ${e.response?.status || e.message}`);
+        return res.status(502).json({
+            success: false,
+            error: `Torrentio unavailable: ${e.message}`,
+            streams: [],
+        });
+    }
+});
+
+
 app.listen(PORT, () => {
     console.log(`[Engine] Online on port ${PORT}`);
 });
+

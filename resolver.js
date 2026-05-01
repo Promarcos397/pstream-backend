@@ -1,89 +1,167 @@
 /**
- * P-Stream Giga Engine Resolver v17.0.0
- * "Full Diagnostics + Hardened Race"
+ * P-Stream Giga Engine Resolver v18.0.0
+ * "Vyla Expansion + No-Embed Policy + Smart Source Ranking"
  *
- * ══ PROVIDER STATUS (2026-04-29) ═══════════════════════════════════════════
+ * ══ PROVIDER STATUS (2026-05-01) ═══════════════════════════════════════════
  *
- * ✅ VaPlayer  (streamdata.vaplayer.ru) — 4 mirrors, clean JSON API.      ~2.4s
- * ✅ VidZee    (player.vidzee.wtf)      — 3-5 sources, AES-GCM/CBC.       ~8s
- *                                         CDN blocks HF IPs → noProxy=true
- * ✅ VidSrc.ru (vsembed.ru)             — 3-hop HTML chain, cloudnestra.  ~7.7s
- *                                         noProxy=true already set.
- * ✅ LookMovie (lmscript.xyz)           — Title-search based, 1 source.   ~7.4s
- *                                         Requires title param from frontend.
+ * ✅ VaPlayer  (streamdata.vaplayer.ru) — fast clean JSON API.          ~2.4s
+ * ✅ VidZee    (player.vidzee.wtf)      — AES decrypt, CDN noProxy.    ~8s
+ * ✅ VidSrc.ru (vsembed.ru)             — 3-hop HTML chain.             ~7.7s
+ * ✅ LookMovie (lmscript.xyz)           — title-search based.           ~7.4s
+ * ✅ Vyla      (vyla-api.pages.dev)     — aggregator, 14+ sources.     ~2-3s
+ *                                         Returns: VixSrc, VidRock,
+ *                                         VidZee, 02Embed, direct MKV.
  *
- * ⚠️  VidSrc.me (vidsrcme.ru)          — Embed-only fallback. No raw HLS.
- *                                         Used in Stage 3 only.
+ * ❌ VixSrc   (vixsrc.to) — DEAD AS OF 2026-04. Blocks datacenter IPs.
+ * ❌ VidSrc.me — embed-only. POLICY: no embed fallbacks.
+ * ❌ PrimeSrc  — embed-only. POLICY: no embed fallbacks.
+ * ❌ KiraStreams — embed-only. No raw API.
+ * ❌ AutoEmbed — New Relic JS gate.
+ * ❌ MoviesAPI — SPA, JS-only.
  *
- * ❌ VixSrc   (vixsrc.to) — DEAD AS OF 2026-04. Actively blocking
- *                           datacenter IPs (Hugging Face) + API automation.
- *                           Returns 403 on all extractor requests.
- *                           REMOVED from race.
+ * ══ POLICY ════════════════════════════════════════════════════════════════
  *
- * ══ REMOVED (previously dead, confirmed 2026-04-24) ═══════════════════════
- * ❌ VidSrc.to  — Wraps vsembed.ru (= VidSrc.ru). Redundant.
- * ❌ VidSrc.me  — SPA, JS-only (old domain). Replaced with vidsrcme.ru embed.
- * ❌ VidSrc.xyz — Consistent timeout (12-13s).
- * ❌ VidLink    — HTTP 400 on all requests.
- * ❌ FlixHQ     — HTTP 404 on TMDB path.
- * ❌ 2EmbedSkin — Wraps dead 2embed.cc.
- * ❌ VidBinge   — SPA, JS-only.
- * ❌ VidNest    — 403, blocks HF IPs.
- * ❌ NontonGo   — Connection refused.
- * ❌ RidoMovies — Cloudflare JS challenge.
- * ❌ SuperEmbed — 678KB SPA, no extractable stream.
- * ❌ AutoEmbed  — New Relic JS gate.
- * ❌ MoviesAPI  — SPA, JS-only.
- * ❌ HollyMovieHD — HTTP 404.
+ * NO EMBED FALLBACKS. Every source must be a raw M3U8 or direct MP4/MKV URL.
+ * If all providers fail → return error. No iframes, no in-browser embeds.
  *
  * ══ ARCHITECTURE ══════════════════════════════════════════════════════════
  *
- * Stage 1 (22s timeout):  VaPlayer + VidZee + VidSrc.ru + LookMovie — full parallel race.
- *   - VaPlayer: fastest remaining M3U8 provider (~2-3s).
- *   - VidZee / VidSrc.ru / LookMovie: slower but act as fallbacks.
- *   - After first success, 1.5s grace window collects additional winners.
- *   - All results merged: sources deduplicated, subtitles merged.
+ * Stage 1 (25s timeout): All providers race in parallel.
+ *   - VaPlayer + Vyla: fastest (~2-3s each). Vyla alone delivers 14+ sources.
+ *   - VidZee / VidSrc.ru / LookMovie: slower backup sources.
+ *   - After first success, 2s grace window collects additional winners.
+ *   - All results merged, deduplicated by CDN hostname, quality-sorted.
  *
- * Stage 2 (embed fallback): VidSrc.me embed — shown as iframe player.
- *   - Only fires if Stage 1 returns zero M3U8 sources.
- *   - Frontend must handle isEmbed=true sources via an <iframe>.
+ * ══ SMART SOURCE RANKING ══════════════════════════════════════════════════
  *
- * Stage 3 (PrimeSrc embed): Last resort. Also embed-only.
+ * Final source list sorted by:
+ *   1. Quality (4K > 1080p > 720p > auto/unknown)
+ *   2. Type (HLS > MP4 > MKV) — HLS enables adaptive bitrate
+ *   3. Provider speed (faster provider = earlier in list)
  *
- * External subs: vdrk fetched in parallel throughout — never blocks stream.
+ * ══ CDN DEDUPLICATION ═════════════════════════════════════════════════════
+ *
+ * Sources sharing the same CDN hostname are capped at MAX_PER_CDN_HOST = 3.
+ * Prevents 8 VidZee tokens from the same CDN flooding the source list.
  *
  * ══ DIAGNOSABILITY ════════════════════════════════════════════════════════
  *
- * Every extractor result now carries:
- *   _elapsedMs     — how long it took
+ * Every extractor result carries:
+ *   _elapsedMs     — timing
  *   _providerName  — canonical name
  *   _failReason    — human-readable failure reason (on failure)
  *   _status        — 'success' | 'no_sources' | 'error' | 'timeout'
- *
- * The resolver also exports `diagnoseProviders(tmdbId, type, s, e)` which
- * runs all providers individually and returns a full diagnostic report.
- * This powers GET /api/stream/diagnose on the backend.
  */
 
 import { scrapeVidZee }       from './extractors/vidzee.js';
 import { scrapeVidSrc as scrapeVidSrcRu } from './extractors/vidsrcru.js';
 import { extractVaPlayer }    from './extractors/vaplayer.js';
 import { scrapeLookMovie }    from './extractors/lookmovie.js';
-import { scrapePrimeSrc }     from './extractors/primesrc.js';
-import { scrapeVidSrcMe }     from './extractors/vidsrcme.js';
+import { scrapeVyla }         from './extractors/vyla.js';
 import { scrapeVdrkCaptions } from './extractors/subs_vdrk.js';
 import { filterByHealth }     from './services/providerHealth.js';
 
-// ── Structured extractor result with diagnostics ──────────────────────────────
+// ── Quality ranking ────────────────────────────────────────────────────────
+const QUALITY_RANK = {
+    '4k': 0, '2160p': 0,
+    '1440p': 1,
+    '1080p': 2,
+    '720p': 3,
+    '480p': 4,
+    '360p': 5,
+    '240p': 6,
+    'hd': 7,
+    'auto': 8,
+    'unknown': 9,
+};
 
-/**
- * Run a single extractor with a timeout, capturing timing + failure reason.
- * Always resolves (never rejects). Returns a diagnostic-enriched result object.
- *
- * @param {Object} provider - { id, name, run }
- * @param {number} timeoutMs
- * @returns {Promise<Object>} diagnostic result
- */
+function qualityScore(q = '') {
+    return QUALITY_RANK[q.toLowerCase()] ?? 9;
+}
+
+// ── Type ranking (HLS adaptive = best for streaming) ──────────────────────
+const TYPE_RANK = { hls: 0, mp4: 1, mkv: 2 };
+
+function typeScore(src) {
+    if (src.isM3U8) return 0; // HLS
+    const ext = (src.url || '').split('?')[0].split('.').pop().toLowerCase();
+    return TYPE_RANK[ext] ?? 3;
+}
+
+// ── CDN hostname deduplication ─────────────────────────────────────────────
+const MAX_PER_CDN_HOST = 3;
+
+function getCdnHost(url = '') {
+    try { return new URL(url).hostname; } catch (_) { return url; }
+}
+
+function deduplicateSourcesByCdn(sources) {
+    const hostCount = new Map();
+    return sources.filter(src => {
+        const host = getCdnHost(src.url);
+        const count = hostCount.get(host) || 0;
+        if (count >= MAX_PER_CDN_HOST) return false;
+        hostCount.set(host, count + 1);
+        return true;
+    });
+}
+
+// ── Smart source merger & sorter ───────────────────────────────────────────
+function mergeAndRankSources(results) {
+    const urlSeen    = new Set();
+    const allSources = [];
+
+    // Collect all unique non-embed sources from all successful providers
+    for (const result of results) {
+        for (const src of (result.sources || [])) {
+            if (src.isEmbed) continue;
+            if (!src.url)    continue;
+            if (urlSeen.has(src.url)) continue;
+            urlSeen.add(src.url);
+            allSources.push({
+                ...src,
+                provider:   src.provider   || result.provider   || result._providerName || 'unknown',
+                providerId: src.providerId || result._providerId || 'unknown',
+                _providerElapsedMs: result._elapsedMs || 9999,
+            });
+        }
+    }
+
+    // Sort: quality → type → provider speed
+    allSources.sort((a, b) => {
+        const qa = qualityScore(a.quality);
+        const qb = qualityScore(b.quality);
+        if (qa !== qb) return qa - qb;
+
+        const ta = typeScore(a);
+        const tb = typeScore(b);
+        if (ta !== tb) return ta - tb;
+
+        return (a._providerElapsedMs || 9999) - (b._providerElapsedMs || 9999);
+    });
+
+    // Cap sources per CDN host to avoid flooding with tokens from same dead CDN
+    return deduplicateSourcesByCdn(allSources);
+}
+
+// ── Subtitle merger ────────────────────────────────────────────────────────
+function mergeSubtitleArrays(results) {
+    const subSeen = new Set();
+    const subs    = [];
+    for (const result of results) {
+        for (const sub of (result.subtitles || [])) {
+            const key = `${sub.url}|${sub.lang || ''}`;
+            if (subSeen.has(key)) continue;
+            subSeen.add(key);
+            subs.push(sub);
+        }
+    }
+    return subs;
+}
+
+
+// ── Structured extractor runner ────────────────────────────────────────────
+
 async function runExtractorDiag(provider, timeoutMs = 18000) {
     const start = Date.now();
     let status = 'error';
@@ -102,17 +180,17 @@ async function runExtractorDiag(provider, timeoutMs = 18000) {
 
         if (!raw) {
             status = 'no_sources';
-            failReason = 'Extractor returned null — provider likely down, blocked, or returned empty data';
+            failReason = 'Extractor returned null';
         } else if (!raw.success) {
             status = 'no_sources';
-            failReason = raw.error || 'success=false with no error message';
+            failReason = raw.error || 'success=false';
         } else if (!raw.sources?.length) {
             status = 'no_sources';
-            failReason = 'success=true but sources array is empty';
+            failReason = 'empty sources array';
         } else if (raw.sources.every(s => s.isEmbed)) {
+            // Policy: reject embed-only results
             status = 'embed_only';
-            failReason = 'All sources are embed iframes — no raw M3U8 available from this provider';
-            result = { ...raw, _elapsedMs: elapsed, _providerName: provider.name, _providerId: provider.id, _status: 'embed_only', _failReason: failReason };
+            failReason = 'All sources are embeds — rejected by no-embed policy';
         } else {
             status = 'success';
             result = { ...raw, _elapsedMs: elapsed, _providerName: provider.name, _providerId: provider.id, _status: 'success' };
@@ -133,8 +211,8 @@ async function runExtractorDiag(provider, timeoutMs = 18000) {
         const isTimeout = /TIMEOUT_/.test(err.message) || err.name === 'TimeoutError';
         status = isTimeout ? 'timeout' : 'error';
         failReason = isTimeout
-            ? `Timed out after ${elapsed}ms — provider too slow or unresponsive`
-            : `Threw exception: ${err.message}`;
+            ? `Timed out after ${elapsed}ms`
+            : `Exception: ${err.message}`;
 
         console.warn(`[Race] ✗ ${provider.name} (${status}): ${failReason}`);
 
@@ -152,18 +230,15 @@ async function runExtractorDiag(provider, timeoutMs = 18000) {
 
 
 /**
- * Race multiple extractors. Returns all successful (non-embed) results.
- * After the first success, waits `graceAfterFirstMs` for other fast providers
- * before finalising — so we can merge sources from multiple winners.
- *
- * Diagnostics: logs every provider outcome (success, fail reason, timing).
+ * Race all providers in parallel.
+ * After first success → wait graceAfterFirstMs for more providers to finish.
+ * Returns array of all successful results (for merging).
  */
-function collectExtractorResults(extractors, timeoutMs, graceAfterFirstMs = 1500) {
+function collectExtractorResults(extractors, timeoutMs, graceAfterFirstMs = 2000) {
     return new Promise(resolve => {
         let settled = 0;
         const total = extractors.length;
         let resolved = false;
-        let firstSuccessSeen = false;
         let graceTimer = null;
         const successes = [];
         const allDiagnostics = [];
@@ -176,28 +251,28 @@ function collectExtractorResults(extractors, timeoutMs, graceAfterFirstMs = 1500
             clearTimeout(masterTimer);
             if (graceTimer) clearTimeout(graceTimer);
 
-            // Summary log
-            console.log(`[Race] ── Final summary ────────────────────────────────`);
+            console.log(`[Race] ── Final summary ──────────────────────────────`);
             for (const d of allDiagnostics) {
-                const icon = d._status === 'success' ? '✅' : d._status === 'embed_only' ? '📦' : '❌';
-                console.log(`[Race] ${icon} ${d._providerName} → ${d._status}${d._failReason ? ` (${d._failReason})` : ''} [${d._elapsedMs}ms]`);
+                const icon = d._status === 'success' ? '✅' : d._status === 'embed_only' ? '🚫' : '❌';
+                console.log(`[Race] ${icon} ${d._providerName} → ${d._status} [${d._elapsedMs}ms]${d._failReason ? ` (${d._failReason})` : ''}`);
             }
             if (successes.length === 0) {
-                console.warn(`[Race] ❌ ALL providers failed. Check individual failure reasons above.`);
+                console.warn(`[Race] ❌ ALL providers failed.`);
             } else {
-                console.log(`[Race] ✅ ${successes.length}/${total} provider(s) succeeded.`);
+                const totalSources = successes.reduce((n, r) => n + (r.sources?.filter(s => !s.isEmbed).length || 0), 0);
+                console.log(`[Race] ✅ ${successes.length}/${total} succeeded → ${totalSources} raw sources total`);
             }
-            console.log(`[Race] ─────────────────────────────────────────────────`);
+            console.log(`[Race] ────────────────────────────────────────────────`);
 
             resolve(successes);
         };
 
         const masterTimer = setTimeout(() => {
-            console.warn(`[Race] ⏱ Master timeout (${timeoutMs}ms) reached.`);
+            console.warn(`[Race] ⏱ Master timeout (${timeoutMs}ms).`);
             finalize();
         }, timeoutMs);
 
-        extractors.forEach((provider, i) => {
+        extractors.forEach(provider => {
             runExtractorDiag(provider, Math.floor(timeoutMs * 0.9)).then(diagResult => {
                 if (resolved) return;
 
@@ -205,19 +280,16 @@ function collectExtractorResults(extractors, timeoutMs, graceAfterFirstMs = 1500
                 settled++;
 
                 if (diagResult._status === 'success') {
-                    firstSuccessSeen = true;
+                    const srcCount = diagResult.sources?.filter(s => !s.isEmbed).length || 0;
                     successes.push(diagResult);
-                    console.log(`[Race] ✅ ${diagResult._providerName} in ${diagResult._elapsedMs}ms → ${diagResult.sources?.length} source(s)`);
+                    console.log(`[Race] ✅ ${diagResult._providerName} in ${diagResult._elapsedMs}ms → ${srcCount} raw source(s)`);
 
-                    // Start grace window after first success
                     if (!graceTimer) {
                         graceTimer = setTimeout(() => finalize(), graceAfterFirstMs);
                     }
                 }
 
-                if (settled === total) {
-                    finalize();
-                }
+                if (settled === total) finalize();
             });
         });
     });
@@ -227,15 +299,13 @@ function collectExtractorResults(extractors, timeoutMs, graceAfterFirstMs = 1500
 // ── Main resolver ─────────────────────────────────────────────────────────────
 
 export async function resolveStreaming(tmdbId, type, season, episode, title, year) {
-    console.log(`[Resolver v17] Resolving: ${title || tmdbId} (${type}${type === 'tv' ? ` S${season}E${episode}` : ''})`);
+    console.log(`[Resolver v18] ${title || tmdbId} (${type}${type === 'tv' ? ` S${season}E${episode}` : ''})`);
 
-    // External subtitles fetched in parallel throughout — never blocks stream
+    // External subtitles fetched in background — never blocks stream delivery
     const externalSubsPromise = scrapeVdrkCaptions(tmdbId, type, season, episode).catch(() => []);
 
-    const mergeSubtitles = async (result) => {
+    const mergeExternalSubs = async (result) => {
         if (!result) return result;
-        // Cap subtitle wait at 2s — subs are bonus content, never block stream delivery.
-        // If VDRK is slow (proxy chain adds 8-12s latency), skip and return stream immediately.
         try {
             const externalSubs = await Promise.race([
                 externalSubsPromise,
@@ -248,22 +318,40 @@ export async function resolveStreaming(tmdbId, type, season, episode, title, yea
         return result;
     };
 
-    // ══ Stage 1: Parallel race — all M3U8 providers ════════════════════════
-    // VaPlayer (~2-3s) is the fastest remaining reliable provider.
-    // VidZee/VidSrc.ru/LookMovie are slower but serve as backup.
-    // VixSrc REMOVED — actively blocking datacenter IPs as of 2026-04.
+    // ══ Stage 1: Full parallel race — ALL M3U8/direct-stream providers ══════
+    //
+    // Vyla (~2-3s) is the new heavyweight — returns 14+ sources from multiple
+    // underlying providers in a single HTTP call. VaPlayer is fastest for its
+    // own CDN. VidZee/VidSrc.ru/LookMovie add depth.
+    //
+    // No embed fallbacks. If zero raw sources found → return error.
     const providers = [
-        { id: 'vaplayer',   name: 'VaPlayer',   run: () => extractVaPlayer({ tmdbId, type, season, episode }) },
-        { id: 'vidzee',     name: 'VidZee',     run: () => scrapeVidZee(tmdbId, type, season, episode) },
-        { id: 'vidsrc_ru',  name: 'VidSrc.ru',  run: () => scrapeVidSrcRu(tmdbId, type, season, episode) },
+        {
+            id: 'vyla',
+            name: 'Vyla Aggregator',
+            run: () => scrapeVyla(tmdbId, type, season, episode)
+        },
+        {
+            id: 'vaplayer',
+            name: 'VaPlayer',
+            run: () => extractVaPlayer({ tmdbId, type, season, episode })
+        },
+        {
+            id: 'vidzee',
+            name: 'VidZee',
+            run: () => scrapeVidZee(tmdbId, type, season, episode)
+        },
+        {
+            id: 'vidsrc_ru',
+            name: 'VidSrc.ru',
+            run: () => scrapeVidSrcRu(tmdbId, type, season, episode)
+        },
         {
             id: 'lookmovie',
             name: 'LookMovie',
-            // LookMovie needs title+year from TMDB. If not passed, skip silently rather than
-            // wasting a scrape slot on a guaranteed null result.
             run: () => (title
                 ? scrapeLookMovie(tmdbId, type === 'movie' ? 'movie' : 'show', season, episode, title, year)
-                : Promise.resolve({ success: false, _skipReason: 'title not provided by frontend — LookMovie requires title+year' })
+                : Promise.resolve({ success: false, _skipReason: 'no title provided' })
             )
         },
     ];
@@ -271,160 +359,99 @@ export async function resolveStreaming(tmdbId, type, season, episode, title, yea
     const healthyProviders = await filterByHealth(providers);
     const activeProviders = healthyProviders.length ? healthyProviders : providers;
 
-    console.log(`[Resolver] Racing ${activeProviders.length} M3U8 provider(s): ${activeProviders.map(p => `${p.name}${p.HealthScore !== undefined ? ` (health:${p.HealthScore})` : ''}`).join(', ')}`);
+    console.log(`[Resolver] Racing ${activeProviders.length} provider(s): ${activeProviders.map(p => p.name).join(', ')}`);
 
-    const stage1Results = await collectExtractorResults(activeProviders, 22000, 1500);
+    const stageResults = await collectExtractorResults(activeProviders, 25000, 2000);
 
-    if (stage1Results.length) {
-        const sortedByLatency = [...stage1Results].sort((a, b) => (a._elapsedMs || 0) - (b._elapsedMs || 0));
-        const winner = sortedByLatency[0];
-
-        const subtitles = [];
-        const subtitleSeen = new Set();
-        const sourceSeen = new Set();
-        const mergedSources = [];
-
-        for (const result of sortedByLatency) {
-            for (const src of (result.sources || [])) {
-                if (src.isEmbed) continue; // Don't mix embed sources into M3U8 stage
-                const key = `${src.url}|${src.quality || 'auto'}`;
-                if (sourceSeen.has(key)) continue;
-                sourceSeen.add(key);
-                mergedSources.push({
-                    ...src,
-                    provider: src.provider || result.provider || result._providerName || 'unknown',
-                    providerId: src.providerId || result._providerId || 'unknown',
-                });
-            }
-            for (const sub of (result.subtitles || [])) {
-                const key = `${sub.url}|${sub.lang || ''}`;
-                if (subtitleSeen.has(key)) continue;
-                subtitleSeen.add(key);
-                subtitles.push(sub);
-            }
-        }
+    if (stageResults.length) {
+        const mergedSources   = mergeAndRankSources(stageResults);
+        const mergedSubtitles = mergeSubtitleArrays(stageResults);
 
         if (mergedSources.length) {
-            const mergedResult = {
-                ...winner,
-                success: true,
-                provider: winner.provider || winner._providerName,
+            // Use the fastest successful provider as the nominal "winner" for metadata
+            const winner = [...stageResults].sort((a, b) => (a._elapsedMs || 0) - (b._elapsedMs || 0))[0];
+
+            const result = {
+                success:    true,
+                provider:   winner.provider || winner._providerName,
                 providerId: winner._providerId || 'unknown',
-                sources: mergedSources,
-                subtitles,
+                sources:    mergedSources,
+                subtitles:  mergedSubtitles,
                 _diagnostics: {
                     stage: 1,
-                    providerCount: stage1Results.length,
-                    sourceCount: mergedSources.length,
+                    providerCount:  stageResults.length,
+                    sourceCount:    mergedSources.length,
                     winnerProvider: winner._providerName,
                     winnerElapsedMs: winner._elapsedMs,
+                    allProviders: stageResults.map(r => ({
+                        name: r._providerName,
+                        sources: r.sources?.filter(s => !s.isEmbed).length || 0,
+                        ms: r._elapsedMs,
+                    })),
                 },
             };
-            console.log(`[Resolver] ✅ Stage 1 winner: ${mergedResult.provider} | merged ${stage1Results.length} provider(s) → ${mergedSources.length} source(s)`);
-            return mergeSubtitles(mergedResult);
+
+            console.log(`[Resolver] ✅ Done: ${mergedSources.length} ranked sources from ${stageResults.length} provider(s). Top: ${mergedSources[0]?.quality} ${mergedSources[0]?.provider}`);
+            return mergeExternalSubs(result);
         }
     }
 
-    // ══ Stage 2: VidSrc.me embed fallback ══════════════════════════════════
-    console.log('[Resolver] Stage 2: VidSrc.me embed fallback...');
-    try {
-        const embedResult = await scrapeVidSrcMe(tmdbId, type, season, episode);
-        if (embedResult?.success && embedResult.sources?.length) {
-            embedResult.isEmbedFallback = true;
-            embedResult._diagnostics = { stage: 2, note: 'All M3U8 providers failed — embed fallback active' };
-            console.log(`[Resolver] ⚠️  Stage 2 Embed Fallback: ${embedResult.provider}`);
-            return mergeSubtitles(embedResult);
-        }
-    } catch (_) {}
-
-    // ══ Stage 3: PrimeSrc embed last resort ════════════════════════════════
-    console.log('[Resolver] Stage 3: PrimeSrc embed last resort...');
-    try {
-        const stage3Result = await scrapePrimeSrc(tmdbId, type, season, episode);
-        if (stage3Result?.success && stage3Result.sources?.length) {
-            stage3Result.isEmbedFallback = true;
-            stage3Result._diagnostics = { stage: 3, note: 'All M3U8 and VidSrc embed failed — PrimeSrc last resort' };
-            console.log(`[Resolver] ⚠️  Stage 3 Embed Fallback: ${stage3Result.provider}`);
-            return stage3Result;
-        }
-    } catch (_) {}
-
-    console.warn(`[Resolver] ❌ All stages failed for: ${title || tmdbId}`);
+    // ══ No raw sources from any provider ═══════════════════════════════════
+    console.warn(`[Resolver] ❌ All providers failed for: ${title || tmdbId}`);
     return {
         success: false,
         error: 'No stream found. All providers are currently unavailable. Please try again in a moment.',
-        _diagnostics: { stage: 'all_failed', note: 'Check /api/stream/diagnose for per-provider detail' },
+        _diagnostics: {
+            stage: 'all_failed',
+            note: 'Check /api/stream/diagnose for per-provider detail',
+        },
     };
 }
 
 
-// ── Diagnostic helper (powers /api/stream/diagnose) ──────────────────────────
+// ── Diagnostic helper ──────────────────────────────────────────────────────────
 
-/**
- * Runs every provider individually (no race-short-circuit) and returns a
- * detailed per-provider report. This is slow (up to 25s) but gives you the
- * full picture of what's working and what isn't.
- *
- * Response shape:
- * {
- *   tmdbId, type, season, episode,
- *   elapsedMs: number,
- *   providers: [
- *     {
- *       id, name,
- *       status: 'success' | 'no_sources' | 'error' | 'timeout' | 'embed_only',
- *       elapsedMs: number,
- *       failReason?: string,
- *       sourceCount?: number,
- *       sources?: Array<{ url, quality, isM3U8, isEmbed, noProxy }>,
- *       subtitleCount?: number,
- *     }
- *   ]
- * }
- */
 export async function diagnoseProviders(tmdbId, type, season = '1', episode = '1', title = '', year = '') {
     const DIAG_TIMEOUT = 25000;
 
     const allProviders = [
-        { id: 'vaplayer',   name: 'VaPlayer',   run: () => extractVaPlayer({ tmdbId, type, season, episode }) },
-        { id: 'vidzee',     name: 'VidZee',     run: () => scrapeVidZee(tmdbId, type, season, episode) },
-        { id: 'vidsrc_ru',  name: 'VidSrc.ru',  run: () => scrapeVidSrcRu(tmdbId, type, season, episode) },
-        { id: 'lookmovie',  name: 'LookMovie',  run: () => scrapeLookMovie(tmdbId, type === 'movie' ? 'movie' : 'show', season, episode, title, year) },
-        { id: 'vidsrcme',   name: 'VidSrc.me',  run: () => scrapeVidSrcMe(tmdbId, type, season, episode) },
-        { id: 'primesrc',   name: 'PrimeSrc',   run: () => scrapePrimeSrc(tmdbId, type, season, episode) },
+        { id: 'vyla',      name: 'Vyla Aggregator', run: () => scrapeVyla(tmdbId, type, season, episode) },
+        { id: 'vaplayer',  name: 'VaPlayer',        run: () => extractVaPlayer({ tmdbId, type, season, episode }) },
+        { id: 'vidzee',    name: 'VidZee',          run: () => scrapeVidZee(tmdbId, type, season, episode) },
+        { id: 'vidsrc_ru', name: 'VidSrc.ru',       run: () => scrapeVidSrcRu(tmdbId, type, season, episode) },
+        { id: 'lookmovie', name: 'LookMovie',       run: () => scrapeLookMovie(tmdbId, type === 'movie' ? 'movie' : 'show', season, episode, title, year) },
     ];
 
     const startAll = Date.now();
-    console.log(`[Diagnose] Running full provider diagnostic for ${title || tmdbId} (${type})...`);
+    console.log(`[Diagnose] Running full diagnostic for ${title || tmdbId} (${type})...`);
 
     const results = await Promise.all(
         allProviders.map(p => runExtractorDiag(p, DIAG_TIMEOUT))
     );
 
     const report = {
-        tmdbId,
-        type,
-        season,
-        episode,
+        tmdbId, type, season, episode,
         title: title || null,
         elapsedMs: Date.now() - startAll,
+        policy: 'no-embed — only raw M3U8/MP4/MKV sources accepted',
         providers: results.map(r => {
             const out = {
-                id: r._providerId,
-                name: r._providerName,
-                status: r._status,
+                id:        r._providerId,
+                name:      r._providerName,
+                status:    r._status,
                 elapsedMs: r._elapsedMs,
             };
             if (r._failReason) out.failReason = r._failReason;
             if (r.sources?.length) {
-                out.sourceCount = r.sources.length;
-                // Include sanitised source preview (URL truncated for brevity)
-                out.sources = r.sources.map(s => ({
+                const rawSources = r.sources.filter(s => !s.isEmbed);
+                out.rawSourceCount   = rawSources.length;
+                out.embedSourceCount = r.sources.length - rawSources.length;
+                out.sources = rawSources.map(s => ({
                     urlPreview: s.url ? s.url.substring(0, 100) + (s.url.length > 100 ? '…' : '') : null,
-                    quality: s.quality,
-                    isM3U8: !!s.isM3U8,
-                    isEmbed: !!s.isEmbed,
-                    noProxy: !!s.noProxy,
+                    quality:  s.quality,
+                    isM3U8:   !!s.isM3U8,
+                    noProxy:  !!s.noProxy,
+                    provider: s.provider,
                 }));
             }
             if (r.subtitles?.length) out.subtitleCount = r.subtitles.length;
@@ -433,7 +460,8 @@ export async function diagnoseProviders(tmdbId, type, season = '1', episode = '1
     };
 
     const successCount = results.filter(r => r._status === 'success').length;
-    console.log(`[Diagnose] ✅ ${successCount}/${allProviders.length} providers succeeded. Total: ${report.elapsedMs}ms`);
+    const totalRawSources = results.reduce((n, r) => n + (r.sources?.filter(s => !s.isEmbed).length || 0), 0);
+    console.log(`[Diagnose] ✅ ${successCount}/${allProviders.length} providers, ${totalRawSources} raw sources. Total: ${report.elapsedMs}ms`);
 
     return report;
 }
