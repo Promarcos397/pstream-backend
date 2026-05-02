@@ -235,7 +235,13 @@ async function runExtractorDiag(provider, timeoutMs = 18000) {
  * After first success → wait graceAfterFirstMs for more providers to finish.
  * Returns array of all successful results (for merging).
  */
-function collectExtractorResults(extractors, timeoutMs, graceAfterFirstMs = 2000) {
+// Minimum sources from a single provider needed to exit the grace window early.
+// Vyla returns 7+ — hitting this threshold lets us skip waiting for slow providers.
+const SOURCE_THRESHOLD_FOR_EARLY_EXIT = 4;
+const GRACE_SHORT_MS  = 300;   // if first winner has >= SOURCE_THRESHOLD sources
+const GRACE_LONG_MS   = 1400;  // if first winner has fewer sources — wait for backup
+
+function collectExtractorResults(extractors, timeoutMs) {
     return new Promise(resolve => {
         let settled = 0;
         const total = extractors.length;
@@ -286,7 +292,13 @@ function collectExtractorResults(extractors, timeoutMs, graceAfterFirstMs = 2000
                     console.log(`[Race] ✅ ${diagResult._providerName} in ${diagResult._elapsedMs}ms → ${srcCount} raw source(s)`);
 
                     if (!graceTimer) {
-                        graceTimer = setTimeout(() => finalize(), graceAfterFirstMs);
+                        // Adaptive grace: rich providers (Vyla 7+ srcs) exit fast.
+                        // Thin providers wait a bit for backups to land.
+                        const grace = srcCount >= SOURCE_THRESHOLD_FOR_EARLY_EXIT
+                            ? GRACE_SHORT_MS
+                            : GRACE_LONG_MS;
+                        console.log(`[Race] ⏳ Grace window: ${grace}ms (${srcCount} src${srcCount !== 1 ? 's' : ''} from first winner)`);
+                        graceTimer = setTimeout(() => finalize(), grace);
                     }
                 }
 
@@ -300,7 +312,7 @@ function collectExtractorResults(extractors, timeoutMs, graceAfterFirstMs = 2000
 // ── Main resolver ─────────────────────────────────────────────────────────────
 
 export async function resolveStreaming(tmdbId, type, season, episode, title, year) {
-    console.log(`[Resolver v18] ${title || tmdbId} (${type}${type === 'tv' ? ` S${season}E${episode}` : ''})`);
+    console.log(`[Resolver v19] ${title || tmdbId} (${type}${type === 'tv' ? ` S${season}E${episode}` : ''})`);
 
     // External subtitles fetched in background — never blocks stream delivery
     const externalSubsPromise = scrapeVdrkCaptions(tmdbId, type, season, episode).catch(() => []);
@@ -308,9 +320,10 @@ export async function resolveStreaming(tmdbId, type, season, episode, title, yea
     const mergeExternalSubs = async (result) => {
         if (!result) return result;
         try {
+            // 800ms cap — external subs are a nice-to-have, not worth delaying stream delivery
             const externalSubs = await Promise.race([
                 externalSubsPromise,
-                new Promise(resolve => setTimeout(() => resolve([]), 2000))
+                new Promise(resolve => setTimeout(() => resolve([]), 800))
             ]);
             if (externalSubs?.length) {
                 result.subtitles = [...(result.subtitles || []), ...externalSubs];
@@ -367,7 +380,7 @@ export async function resolveStreaming(tmdbId, type, season, episode, title, yea
 
     console.log(`[Resolver] Racing ${activeProviders.length} provider(s): ${activeProviders.map(p => p.name).join(', ')}`);
 
-    const stageResults = await collectExtractorResults(activeProviders, 25000, 2000);
+    const stageResults = await collectExtractorResults(activeProviders, 22000);
 
     if (stageResults.length) {
         const mergedSources   = mergeAndRankSources(stageResults);

@@ -1405,18 +1405,122 @@ app.post('/api/torrent/stream', authenticateToken, async (req, res) => {
     }
 });
 
-// OPTIONS preflight for torrent stream (browser sends this before POST with Range)
+// OPTIONS preflight for torrent stream (browser sends this before POST/GET with Range)
 app.options('/api/torrent/stream', (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
-    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Range');
     res.setHeader('Access-Control-Max-Age', '86400');
     res.sendStatus(204);
 });
 
+// GET /api/torrent/stream — identical pipeline but driven by query params.
+// Used by the frontend video element (src= cannot set custom headers).
+// Token is passed as ?token=... query param instead of Authorization header.
+// infoHash is the fastest path — no Torrentio lookup needed.
+app.get('/api/torrent/stream', async (req, res) => {
+    const { infoHash, imdbId, type = 'movie', season, episode, fileIdx, token } = req.query;
+
+    // Auth: accept token from query param (video element can't send Authorization header)
+    if (!token) return res.status(401).json({ error: 'token required' });
+    try {
+        const jwt = require('jsonwebtoken');
+        jwt.verify(token, process.env.JWT_SECRET || 'pstream_secret_key_change_in_prod');
+    } catch {
+        return res.status(401).json({ error: 'invalid or expired token' });
+    }
+
+    if (!infoHash && !imdbId) {
+        return res.status(400).json({ error: 'infoHash or imdbId required' });
+    }
+
+    try {
+        let magnetUri = null;
+        let resolvedFileIdx = fileIdx != null ? parseInt(fileIdx) : null;
+
+        if (infoHash) {
+            // Fast path: build magnet directly from infoHash (no external lookup needed)
+            const trackers = [
+                'udp://open.demonii.com:1337',
+                'udp://tracker.openbittorrent.com:80',
+                'udp://tracker.coppersurfer.tk:6969',
+                'udp://glotorrents.pw:6969',
+                'udp://tracker.opentrackr.org:1337',
+                'udp://torrent.gresille.org:80',
+            ].map(t => `tr=${encodeURIComponent(t)}`).join('&');
+            magnetUri = `magnet:?xt=urn:btih:${infoHash}&${trackers}`;
+            console.log(`[TorrentStream GET] Fast-path via infoHash: ${infoHash}`);
+        } else {
+            // Slow path: fetch from Torrentio (same as POST route)
+            const qualityFilter = 'qualityfilter=720p,1080p,2160p,4k';
+            const sortMode = 'sort=qualitysize';
+            let streamPath = type === 'movie' || type === 'film'
+                ? `stream/movie/${imdbId}.json`
+                : `stream/series/${imdbId}:${parseInt(season)||1}:${parseInt(episode)||1}.json`;
+            const url = `https://torrentio.strem.fun/${sortMode}|${qualityFilter}/${streamPath}`;
+            const resp = await gigaAxios.get(url, { timeout: 12000 });
+            const streams = (resp.data?.streams || []).filter(s => s.infoHash);
+            if (!streams.length) return res.status(404).json({ error: 'No torrent sources found' });
+            const best = streams[0];
+            const trackers = [
+                'udp://open.demonii.com:1337',
+                'udp://tracker.openbittorrent.com:80',
+            ].map(t => `tr=${encodeURIComponent(t)}`).join('&');
+            magnetUri = `magnet:?xt=urn:btih:${best.infoHash}&${trackers}`;
+            resolvedFileIdx = best.fileIdx ?? 0;
+        }
+
+        res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
+        res.setHeader('Access-Control-Allow-Headers', 'Range');
+        res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
+
+        await streamTorrent(magnetUri, resolvedFileIdx, req, res);
+
+    } catch (e) {
+        console.error(`[TorrentStream GET] Error: ${e.message}`);
+        if (!res.headersSent) res.status(500).json({ error: `Torrent stream failed: ${e.message}` });
+    }
+});
+
+
+
 // ── KEEP-ALIVE PING ───────────────────────────────────────────────────────────
 // Frontend pings this every 30s when user is idle to prevent HF Space sleep.
 app.get('/api/ping', (req, res) => res.json({ ok: true, ts: Date.now() }));
+
+// ── TORRENT POOL STATUS ───────────────────────────────────────────────────────
+// Auth-gated diagnostic endpoint: shows active torrent count, file info, RAM.
+// GET /api/torrent/status
+app.get('/api/torrent/status', authenticateToken, (req, res) => {
+    const mem = process.memoryUsage();
+    // Access the internal activeMap via the torrent service
+    // (activeMap is not exported — we read from WebTorrent client)
+    const { activeMap } = require('./services/torrent.js');
+    const torrents = [];
+    if (activeMap) {
+        for (const [hash, entry] of activeMap.entries()) {
+            torrents.push({
+                infoHash:    hash,
+                name:        entry.torrent?.name || 'unknown',
+                streamCount: entry.streamCount,
+                idleSecs:    Math.round((Date.now() - entry.lastActive) / 1000),
+                sizeMB:      entry.torrent?.length ? +(entry.torrent.length / 1e6).toFixed(1) : null,
+                progress:    entry.torrent?.progress != null ? +(entry.torrent.progress * 100).toFixed(1) : null,
+                speed:       entry.torrent?.downloadSpeed ? +(entry.torrent.downloadSpeed / 1e3).toFixed(1) : null,
+                peers:       entry.torrent?.numPeers ?? null,
+            });
+        }
+    }
+    res.json({
+        active:   torrents.length,
+        maxPool:  60,
+        torrents,
+        memory: {
+            heapMB: +(mem.heapUsed / 1e6).toFixed(1),
+            rssMB:  +(mem.rss / 1e6).toFixed(1),
+        },
+    });
+});
 
 
 app.listen(PORT, () => {
