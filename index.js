@@ -12,7 +12,7 @@ import { resolveStreaming, diagnoseProviders } from './resolver.js';
 import { USER_AGENTS, getRandomUA } from './utils/constants.js';
 import Redis from 'ioredis';
 import { recordProviderError, recordProviderSuccess, getAllProviderHealth, canonicalProviderId } from './services/providerHealth.js';
-import { getTorrentSources, streamTorrent } from './services/torrent.js';
+import { getTorrentSources, streamTorrent, activeMap as torrentPool } from './services/torrent.js';
 dotenv.config();
 // BUILD: 2026-04-16T06:50Z � SuperEmbed Stage1A, proxy?gigaAxios, raceExtractors v14.1
 
@@ -1493,23 +1493,18 @@ app.get('/api/ping', (req, res) => res.json({ ok: true, ts: Date.now() }));
 // GET /api/torrent/status
 app.get('/api/torrent/status', authenticateToken, (req, res) => {
     const mem = process.memoryUsage();
-    // Access the internal activeMap via the torrent service
-    // (activeMap is not exported — we read from WebTorrent client)
-    const { activeMap } = require('./services/torrent.js');
     const torrents = [];
-    if (activeMap) {
-        for (const [hash, entry] of activeMap.entries()) {
-            torrents.push({
-                infoHash:    hash,
-                name:        entry.torrent?.name || 'unknown',
-                streamCount: entry.streamCount,
-                idleSecs:    Math.round((Date.now() - entry.lastActive) / 1000),
-                sizeMB:      entry.torrent?.length ? +(entry.torrent.length / 1e6).toFixed(1) : null,
-                progress:    entry.torrent?.progress != null ? +(entry.torrent.progress * 100).toFixed(1) : null,
-                speed:       entry.torrent?.downloadSpeed ? +(entry.torrent.downloadSpeed / 1e3).toFixed(1) : null,
-                peers:       entry.torrent?.numPeers ?? null,
-            });
-        }
+    for (const [hash, entry] of torrentPool.entries()) {
+        torrents.push({
+            infoHash:    hash,
+            name:        entry.torrent?.name || 'unknown',
+            streamCount: entry.streamCount,
+            idleSecs:    Math.round((Date.now() - entry.lastActive) / 1000),
+            sizeMB:      entry.torrent?.length ? +(entry.torrent.length / 1e6).toFixed(1) : null,
+            progress:    entry.torrent?.progress != null ? +(entry.torrent.progress * 100).toFixed(1) : null,
+            speedKBs:    entry.torrent?.downloadSpeed ? +(entry.torrent.downloadSpeed / 1e3).toFixed(1) : null,
+            peers:       entry.torrent?.numPeers ?? null,
+        });
     }
     res.json({
         active:   torrents.length,

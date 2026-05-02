@@ -41,7 +41,7 @@ const TORRENTIO_OPTIONS = [
 // ── WebTorrent pool ───────────────────────────────────────────────────────────
 const MAX_ACTIVE = 60;
 let   client     = null;
-const activeMap  = new Map(); // infoHash → { torrent, lastActive, streamCount }
+export const activeMap = new Map(); // infoHash → { torrent, lastActive, streamCount }
 
 function getClient() {
     if (!client) {
