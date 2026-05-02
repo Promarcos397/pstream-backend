@@ -390,10 +390,87 @@ app.get('/healthcheck', async (req, res) => {
             memory: { heapMb: mem, rssMb: rss },
             cpuAvgPercent: cpu,
             redis: redisStatus,
-            providers: providerStatus,
-            health: providerHealth
         });
     }
+});
+
+// ─── /admin — Giga Backend Admin Dashboard ─────────────────────────────────
+// Protected by ADMIN_SECRET env var.  Access: GET /admin?token=YOUR_SECRET
+const ADMIN_SECRET = process.env.ADMIN_SECRET || '';
+const _adminReqLog = [];
+const MAX_ADMIN_LOG = 50;
+export function recordAdminReq(tmdbId, type, provider, latencyMs, ok) {
+    _adminReqLog.unshift({ ts: Date.now(), tmdbId, type, provider, latencyMs, ok });
+    if (_adminReqLog.length > MAX_ADMIN_LOG) _adminReqLog.length = MAX_ADMIN_LOG;
+}
+
+app.get('/admin', async (req, res) => {
+    const token = req.query.token || (req.headers.authorization || '').replace('Bearer ', '');
+    if (ADMIN_SECRET && token !== ADMIN_SECRET) {
+        return res.status(401).send('401 — pass ?token=YOUR_ADMIN_SECRET');
+    }
+    const mem = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
+    const rss = Math.round(process.memoryUsage().rss / 1024 / 1024);
+    const uptimeSec = Math.round(process.uptime());
+    const uptimeStr = `${Math.floor(uptimeSec/3600)}h ${Math.floor((uptimeSec%3600)/60)}m`;
+    const redisUp = !!redis;
+    const ph = await getAllProviderHealth().catch(() => ({}));
+    const provs = [
+        { name:'VaPlayer',  url:'https://streamdata.vaplayer.ru' },
+        { name:'VidZee',    url:'https://player.vidzee.wtf' },
+        { name:'VidSrc.ru', url:'https://vsembed.ru' },
+        { name:'LookMovie', url:'https://lmscript.xyz' },
+        { name:'Vyla',      url:'https://vyla-api.pages.dev' },
+        { name:'CineSu',    url:'https://cine.su' },
+    ];
+    const probed = await Promise.all(provs.map(async p => {
+        const t = Date.now();
+        try { const r = await gigaAxios.get(p.url,{timeout:4000,validateStatus:()=>true,maxRedirects:1}); return {...p,ok:r.status<500,status:r.status,ms:Date.now()-t}; }
+        catch(e) { return {...p,ok:false,status:0,ms:Date.now()-t}; }
+    }));
+    const upCount = probed.filter(p=>p.ok).length;
+    const phRows = Object.entries(ph).map(([id,h])=>{
+        const total=(h.successCount||0)+(h.failCount||0);
+        const rate=total?Math.round((h.failCount||0)/total*100):0;
+        const col=h.suspended?'#ef4444':rate>50?'#f97316':'#22c55e';
+        return `<tr><td>${id}</td><td style="color:${col}">${h.suspended?'suspended':rate>50?'degraded':'healthy'}</td><td>${h.successCount||0}</td><td>${h.failCount||0}</td><td>${h.avgLatencyMs?Math.round(h.avgLatencyMs)+'ms':'—'}</td></tr>`;
+    }).join('')||'<tr><td colspan="5" style="color:#444">Play a title first</td></tr>';
+    const reqRows = _adminReqLog.slice(0,15).map(r=>{
+        const ago=Math.round((Date.now()-r.ts)/1000);
+        return `<tr><td style="color:#555">${ago}s ago</td><td>${r.tmdbId||'—'} (${r.type||'?'})</td><td>${r.provider||'—'}</td><td>${r.latencyMs?r.latencyMs+'ms':'—'}</td><td style="color:${r.ok?'#22c55e':'#ef4444'}">${r.ok?'✓':'✗'}</td></tr>`;
+    }).join('')||'<tr><td colspan="5" style="color:#444">No requests yet</td></tr>';
+    const provRows = probed.map(p=>`<tr><td>${p.name}</td><td style="color:${p.ok?'#22c55e':'#ef4444'}">${p.ok?`✓ ${p.status}`:`✗ ${p.status||'offline'}`}</td><td style="color:#555">${p.ms}ms</td><td><a href="${p.url}" target="_blank" style="color:#e50914;font-size:.7rem">${p.url}</a></td></tr>`).join('');
+    res.setHeader('Content-Type','text/html; charset=utf-8');
+    res.send(`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Giga Admin</title>
+<style>*{box-sizing:border-box;margin:0;padding:0}body{background:#080808;color:#e5e5e5;font-family:Consolas,monospace;padding:24px 18px;font-size:13px}
+h1{color:#e50914;font-size:1.25rem;font-weight:700}.sub{color:#444;font-size:.7rem;margin-bottom:24px;margin-top:2px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:20px}
+.card{background:#111;border:1px solid #1c1c1c;border-radius:10px;padding:14px}.card .lbl{font-size:.58rem;color:#444;text-transform:uppercase;letter-spacing:2px;margin-bottom:5px}.card .val{font-size:1.5rem;font-weight:700;color:#fff}
+.red{color:#ef4444!important}.green{color:#22c55e!important}.amber{color:#f97316!important}
+h2{font-size:.6rem;color:#444;text-transform:uppercase;letter-spacing:2px;margin:18px 0 8px}
+table{width:100%;border-collapse:collapse;background:#111;border-radius:10px;overflow:hidden;margin-bottom:18px}
+th{background:#161616;color:#444;text-align:left;padding:7px 10px;font-size:.58rem;text-transform:uppercase;letter-spacing:1.5px}
+td{padding:7px 10px;border-top:1px solid #161616;color:#aaa;font-size:.72rem}
+.btn{display:inline-block;padding:5px 12px;background:#e50914;color:#fff;border:none;border-radius:6px;text-decoration:none;font-size:.68rem;cursor:pointer;margin-right:6px}
+.btn.g{background:transparent;border:1px solid #2a2a2a;color:#777}</style></head><body>
+<h1>⚙ Giga Backend</h1><div class="sub">${new Date().toUTCString()}</div>
+<div class="grid">
+<div class="card"><div class="lbl">Uptime</div><div class="val">${uptimeStr}</div></div>
+<div class="card"><div class="lbl">Heap</div><div class="val">${mem}MB</div></div>
+<div class="card"><div class="lbl">RSS</div><div class="val">${rss}MB</div></div>
+<div class="card"><div class="lbl">Redis</div><div class="val ${redisUp?'green':'red'}">${redisUp?'ON':'OFF'}</div></div>
+<div class="card"><div class="lbl">Providers</div><div class="val ${upCount<3?'red':upCount<5?'amber':'green'}">${upCount}/${probed.length}</div></div>
+<div class="card"><div class="lbl">Log Entries</div><div class="val">${_adminReqLog.length}</div></div>
+</div>
+<div style="margin-bottom:18px">
+<a class="btn" href="#" onclick="fetch('/api/cache/clear',{method:'POST'}).then(r=>r.json()).then(d=>alert(d.message||'Done'));return false">🗑 Clear Cache</a>
+<a class="btn g" href="/diagnostics">Diagnostics</a>
+<a class="btn g" href="javascript:location.reload()">↻ Refresh</a>
+</div>
+<h2>Live Provider Connectivity</h2><table><thead><tr><th>Provider</th><th>Status</th><th>Latency</th><th>URL</th></tr></thead><tbody>${provRows}</tbody></table>
+<h2>Self-Healing Engine Health</h2><table><thead><tr><th>Provider ID</th><th>Status</th><th>✓</th><th>✗</th><th>Avg</th></tr></thead><tbody>${phRows}</tbody></table>
+<h2>Recent Stream Requests</h2><table><thead><tr><th>When</th><th>Content</th><th>Provider</th><th>Latency</th><th></th></tr></thead><tbody>${reqRows}</tbody></table>
+</body></html>`);
 });
 
 // --- GIGA PROXY ---
