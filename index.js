@@ -399,7 +399,7 @@ app.get('/healthcheck', async (req, res) => {
 const ADMIN_SECRET = process.env.ADMIN_SECRET || '';
 const _adminReqLog = [];
 const MAX_ADMIN_LOG = 50;
-export function recordAdminReq(tmdbId, type, provider, latencyMs, ok) {
+function recordAdminReq(tmdbId, type, provider, latencyMs, ok) {
     _adminReqLog.unshift({ ts: Date.now(), tmdbId, type, provider, latencyMs, ok });
     if (_adminReqLog.length > MAX_ADMIN_LOG) _adminReqLog.length = MAX_ADMIN_LOG;
 }
@@ -471,6 +471,46 @@ td{padding:7px 10px;border-top:1px solid #161616;color:#aaa;font-size:.72rem}
 <h2>Self-Healing Engine Health</h2><table><thead><tr><th>Provider ID</th><th>Status</th><th>✓</th><th>✗</th><th>Avg</th></tr></thead><tbody>${phRows}</tbody></table>
 <h2>Recent Stream Requests</h2><table><thead><tr><th>When</th><th>Content</th><th>Provider</th><th>Latency</th><th></th></tr></thead><tbody>${reqRows}</tbody></table>
 </body></html>`);
+});
+
+// ─── /proxy/subtitle — VTT Subtitle Proxy ─────────────────────────────────
+// yt-dlp subtitle URLs (googlevideo.com) are blocked by browser CORS policy
+// when used directly in <track src="...">. We proxy them here so the browser
+// receives the content from our domain with proper Access-Control-Allow-Origin.
+app.get('/proxy/subtitle', async (req, res) => {
+    const raw = req.query.url;
+    if (!raw || typeof raw !== 'string') {
+        return res.status(400).send('Missing ?url= parameter');
+    }
+    let targetUrl;
+    try {
+        targetUrl = decodeURIComponent(raw);
+        new URL(targetUrl); // validate
+    } catch {
+        return res.status(400).send('Invalid URL');
+    }
+    // Only allow subtitle CDN hosts — security guard
+    const allowed = ['googlevideo.com', 'youtube.com', 'ytimg.com', 'ggpht.com', 'googleusercontent.com'];
+    const host = new URL(targetUrl).hostname;
+    if (!allowed.some(d => host.endsWith(d))) {
+        return res.status(403).send('Host not allowed');
+    }
+    try {
+        const upstream = await gigaAxios.get(targetUrl, {
+            responseType: 'text',
+            timeout: 8000,
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (compatible; PStreamProxy/2.0)',
+                'Accept': 'text/vtt,text/*,*/*',
+            },
+        });
+        res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Cache-Control', 'public, max-age=300');
+        return res.send(upstream.data);
+    } catch (e) {
+        return res.status(502).send(`Subtitle fetch failed: ${e.message}`);
+    }
 });
 
 // --- GIGA PROXY ---
