@@ -1,16 +1,16 @@
 /**
- * P-Stream Giga Engine Resolver v18.0.0
- * "Vyla Expansion + No-Embed Policy + Smart Source Ranking"
+ * P-Stream Giga Engine Resolver v19.0.0
+ * "CineSu + VidSrc Mirror Expansion + Source Depth"
  *
- * ══ PROVIDER STATUS (2026-05-01) ═══════════════════════════════════════════
+ * ══ PROVIDER STATUS (2026-05-02) ═══════════════════════════════════════════
  *
  * ✅ VaPlayer  (streamdata.vaplayer.ru) — fast clean JSON API.          ~2.4s
  * ✅ VidZee    (player.vidzee.wtf)      — AES decrypt, CDN noProxy.    ~8s
- * ✅ VidSrc.ru (vsembed.ru)             — 3-hop HTML chain.             ~7.7s
+ * ✅ VidSrc.ru (vsembed.ru + 12 mirrors)— 3-hop HTML chain.             ~7.7s
  * ✅ LookMovie (lmscript.xyz)           — title-search based.           ~7.4s
- * ✅ Vyla      (vyla-api.pages.dev)     — aggregator, 14+ sources.     ~2-3s
- *                                         Returns: VixSrc, VidRock,
- *                                         VidZee, 02Embed, direct MKV.
+ * ✅ Vyla      (vyla-api.pages.dev)     — aggregator: 02Embed, CineSu, ~2-3s
+ *                                         VidNest (7 sources), subtitles.
+ * ✅ CineSu    (cine.su)                — direct 1080p HLS, HEAD probe. ~1-2s
  *
  * ❌ VixSrc   (vixsrc.to) — DEAD AS OF 2026-04. Blocks datacenter IPs.
  * ❌ VidSrc.me — embed-only. POLICY: no embed fallbacks.
@@ -58,6 +58,7 @@ import { scrapeVidSrc as scrapeVidSrcRu } from './extractors/vidsrcru.js';
 import { extractVaPlayer }    from './extractors/vaplayer.js';
 import { scrapeLookMovie }    from './extractors/lookmovie.js';
 import { scrapeVyla }         from './extractors/vyla.js';
+import { scrapeCineSu }       from './extractors/cinesu.js';
 import { scrapeVdrkCaptions } from './extractors/subs_vdrk.js';
 import { filterByHealth }     from './services/providerHealth.js';
 
@@ -332,6 +333,11 @@ export async function resolveStreaming(tmdbId, type, season, episode, title, yea
             run: () => scrapeVyla(tmdbId, type, season, episode)
         },
         {
+            id: 'cinesu',
+            name: 'CineSu',
+            run: () => scrapeCineSu(tmdbId, type, season, episode)
+        },
+        {
             id: 'vaplayer',
             name: 'VaPlayer',
             run: () => extractVaPlayer({ tmdbId, type, season, episode })
@@ -416,6 +422,7 @@ export async function diagnoseProviders(tmdbId, type, season = '1', episode = '1
 
     const allProviders = [
         { id: 'vyla',      name: 'Vyla Aggregator', run: () => scrapeVyla(tmdbId, type, season, episode) },
+        { id: 'cinesu',    name: 'CineSu',          run: () => scrapeCineSu(tmdbId, type, season, episode) },
         { id: 'vaplayer',  name: 'VaPlayer',        run: () => extractVaPlayer({ tmdbId, type, season, episode }) },
         { id: 'vidzee',    name: 'VidZee',          run: () => scrapeVidZee(tmdbId, type, season, episode) },
         { id: 'vidsrc_ru', name: 'VidSrc.ru',       run: () => scrapeVidSrcRu(tmdbId, type, season, episode) },

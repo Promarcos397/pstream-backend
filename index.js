@@ -12,6 +12,7 @@ import { resolveStreaming, diagnoseProviders } from './resolver.js';
 import { USER_AGENTS, getRandomUA } from './utils/constants.js';
 import Redis from 'ioredis';
 import { recordProviderError, recordProviderSuccess, getAllProviderHealth, canonicalProviderId } from './services/providerHealth.js';
+import { getTorrentSources, streamTorrent } from './services/torrent.js';
 dotenv.config();
 // BUILD: 2026-04-16T06:50Z � SuperEmbed Stage1A, proxy?gigaAxios, raceExtractors v14.1
 
@@ -1349,8 +1350,75 @@ app.get('/api/torrent/sources', authenticateToken, async (req, res) => {
     }
 });
 
+// ── TORRENT STREAM ────────────────────────────────────────────────────────────
+//
+// POST /api/torrent/stream
+// Body: { imdbId, type, season?, episode?, magnetOverride? }
+//
+// Login-gated last-resort streaming pipeline:
+//   1. Look up best magnet from Torrentio (Redis-cached 24h)
+//   2. Add magnet to server-side WebTorrent instance pool
+//   3. Stream the video file back to client with Range support
+//
+// The frontend calls this only after 2 failed attempts with regular providers.
+// Continuous range requests from the video player keep the HF Space awake.
+
+app.post('/api/torrent/stream', authenticateToken, async (req, res) => {
+    const { imdbId, type = 'movie', season, episode, magnetOverride, fileIdx } = req.body || {};
+
+    if (!imdbId) {
+        return res.status(400).json({ error: 'imdbId is required' });
+    }
+
+    try {
+        let magnetUri = magnetOverride || null;
+        let resolvedFileIdx = fileIdx != null ? parseInt(fileIdx) : null;
+
+        // If no magnetOverride given, fetch from Torrentio
+        if (!magnetUri) {
+            const sources = await getTorrentSources(imdbId, type, season, episode, redis);
+            if (!sources.length) {
+                return res.status(404).json({ error: 'No torrent sources found for this title' });
+            }
+            const best      = sources[0]; // already sorted: best quality + seeders
+            magnetUri       = best.magnet;
+            resolvedFileIdx = best.fileIdx != null ? best.fileIdx : null;
+            console.log(`[TorrentStream] Best: ${best.quality} @ ${best.seeders} seeders — ${best.name}`);
+        }
+
+        if (!magnetUri) {
+            return res.status(500).json({ error: 'Could not resolve magnet link' });
+        }
+
+        // Set CORS headers explicitly (range requests need this)
+        res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
+        res.setHeader('Access-Control-Allow-Headers', 'Range, Authorization');
+        res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
+
+        await streamTorrent(magnetUri, resolvedFileIdx, req, res);
+
+    } catch (e) {
+        console.error(`[TorrentStream] Error: ${e.message}`);
+        if (!res.headersSent) {
+            res.status(500).json({ error: `Torrent stream failed: ${e.message}` });
+        }
+    }
+});
+
+// OPTIONS preflight for torrent stream (browser sends this before POST with Range)
+app.options('/api/torrent/stream', (req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
+    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Range');
+    res.setHeader('Access-Control-Max-Age', '86400');
+    res.sendStatus(204);
+});
+
+// ── KEEP-ALIVE PING ───────────────────────────────────────────────────────────
+// Frontend pings this every 30s when user is idle to prevent HF Space sleep.
+app.get('/api/ping', (req, res) => res.json({ ok: true, ts: Date.now() }));
+
 
 app.listen(PORT, () => {
     console.log(`[Engine] Online on port ${PORT}`);
 });
-

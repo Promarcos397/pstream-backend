@@ -15,10 +15,16 @@ import { proxyAxios, gigaAxios } from '../utils/http.js';
 
 // Try these domains in order — vidsrc.domains tracks which are live.
 // More mirrors = higher chance of at least one working from HF datacenter IPs.
+// Updated 2026-05-02: added cc/cx/co/rip/su/vip from megathread research.
 const EMBED_BASES = [
     'https://vsembed.ru',
     'https://vidsrc-embed.ru',
     'https://vidsrc-embed.su',
+    'https://vidsrc.cc',       // ← NEW: confirmed listed live
+    'https://vidsrc.cx',       // ← NEW: confirmed listed live
+    'https://vidsrc.co',       // ← NEW: confirmed listed live
+    'https://vidsrc.rip',      // ← NEW: confirmed listed live
+    'https://vidsrc.su',       // ← NEW: confirmed listed live
     'https://vidsrc.stream',
     'https://vidsrc.net',
     'https://vidsrc.pm',

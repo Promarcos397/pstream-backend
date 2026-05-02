@@ -1,8 +1,8 @@
 /**
- * Vyla API Extractor — v1.0 (2026-05-01)
+ * Vyla API Extractor — v2.0 (2026-05-02)
  *
  * Vyla is a public aggregator API (vyla-api.pages.dev) that scrapes
- * 8+ underlying providers and returns raw stream URLs in one call.
+ * multiple underlying providers and returns raw stream URLs in one call.
  *
  * Endpoints:
  *   Movie: GET https://vyla-api.pages.dev/api/movie?id={tmdbId}
@@ -10,12 +10,16 @@
  *
  * Response: { success, results_found, sources: [...], subtitles: [...] }
  *
- * Source types returned (observed live 2026-05-01 on Inception/27205):
- *   - 02MovieDownloader: direct MKV on Wasabi/S3 CDN (no IP lock)
- *   - VixSrc:           HLS playlist (IP-locked to resolver → noProxy=true)
- *   - VidRock:          HLS on Bunny CDN (works direct)
- *   - 02Embed:          HLS via madvid3.xyz proxy
- *   - VidZee:           Multiple HLS streams (CDN blocks HF → noProxy=true)
+ * Source types confirmed LIVE (2026-05-02 on Inception/27205 & BB S1E1/1396):
+ *   1. 02Embed  (1080p HLS via madvid3.xyz / storrrrrrm.site proxy)
+ *   2. CineSu   (1080p HLS direct: cine.su/v1/stream/master/{type}/{id}...)
+ *   3. VidNest  (Auto HLS via loffe414wil CDN token-signed URL)
+ *   4. VidNest  (HLS via storm.vodvidl.site)
+ *   5. VidNest  (MP4 direct via tripplestream.online)
+ *   6. VidNest  (HLS via goodstream.cc LS-25)
+ *   7. VidNest  (HLS via goodstream.cc GS-25)
+ *
+ * Subtitles: Bengali, English, French VTT from vdrk.site + megafiles.store
  *
  * CORS: Access-Control-Allow-Origin: * (free, no auth, no rate limit stated)
  * Speed: ~1-3s (Cloudflare Pages global edge)
@@ -24,32 +28,40 @@ import { gigaAxios } from '../utils/http.js';
 
 const BASE_URL = 'https://vyla-api.pages.dev';
 
-// Providers whose CDN URLs are IP-locked to the resolver — must go noProxy
-// so the browser fetches them directly (they're locked to Vyla's CF IP, not HF's).
-const NOPROXY_PROVIDERS = new Set(['vixsrc', 'vidzee', 'vidZee']);
+// Only flag providers whose token was IP-issued to Vyla's CDN IP at resolution
+// time. CineSu and VidNest don't do IP-lock on playback — they work fine through
+// our HF proxy once the URL is obtained.
+const NOPROXY_PROVIDERS = new Set(['vixsrc', 'vidzee', 'vidzee']);
 
-// Providers with direct CDN links that don't need proxying
-const DIRECT_CDN_PROVIDERS = new Set(['02moviedownloader', 'vidrock', 'bunny']);
+// Normalize VidNest quality strings like "LS-25", "GS-25", "MAIN", "Auto"
+// into values our quality sorter understands.
+function normalizeQuality(q = '', provider = '') {
+    const lower = q.toLowerCase();
+    // Pass-through known values
+    if (['4k','2160p','1440p','1080p','720p','480p','360p','240p','hd'].includes(lower)) return q;
+    // VidNest-specific
+    if (lower === 'main')  return '1080p'; // tripplestream.online "MAIN" is typically 1080p
+    if (lower === 'auto')  return 'auto';
+    if (lower.startsWith('ls-') || lower.startsWith('gs-')) return '720p'; // goodstream.cc segments
+    // CineSu returns "1080p" already
+    return q || 'auto';
+}
 
 function mapSource(src) {
-    const provider = src.provider || 'Unknown';
+    const provider    = src.provider || 'Unknown';
     const providerKey = provider.toLowerCase().replace(/\s+/g, '');
     const isHLS = src.type === 'hls';
-    const isMP4 = src.type === 'mp4';
-    const isMKV = src.type === 'mkv';
 
-    // IP-locked providers: token was issued to Vyla's resolver IP.
-    // Must bypass proxy so browser fetches directly (browser IP will mismatch anyway
-    // but many of these don't do strict IP enforcement at play time, only at resolution).
-    // VidZee: CDN actively blocks HF datacenter — noProxy required.
-    const noProxy = NOPROXY_PROVIDERS.has(providerKey) || DIRECT_CDN_PROVIDERS.has(providerKey);
+    // Only IP-locked providers need noProxy.
+    // CineSu and VidNest tokens are not IP-locked at playback time.
+    const noProxy = NOPROXY_PROVIDERS.has(providerKey);
 
     const referer = src.headers?.Referer || src.headers?.referer || '';
     const origin  = src.headers?.Origin  || src.headers?.origin  || '';
 
     return {
         url:        src.url,
-        quality:    src.quality  || 'auto',
+        quality:    normalizeQuality(src.quality, provider),
         isM3U8:     isHLS,
         isEmbed:    false,
         noProxy,
@@ -57,23 +69,39 @@ function mapSource(src) {
         origin,
         provider:   `Vyla/${provider}`,
         providerId: `vyla_${providerKey}`,
-        // Preserve the original headers blob for the proxy to forward
-        headers:    src.headers  || {},
-        // Useful metadata
+        headers:    src.headers || {},
         _type:      src.type,
         _audioTracks: src.audioTracks || [],
     };
 }
 
 function mapSubtitle(sub) {
+    const label = sub.label || 'Unknown';
+    const lower = label.toLowerCase();
+    let lang = lower.split(' ')[0].slice(0, 2);
+    if (lower.startsWith('english'))  lang = 'en';
+    else if (lower.startsWith('french'))   lang = 'fr';
+    else if (lower.startsWith('spanish'))  lang = 'es';
+    else if (lower.startsWith('german'))   lang = 'de';
+    else if (lower.startsWith('arabic'))   lang = 'ar';
+    else if (lower.startsWith('bengali'))  lang = 'bn';
+    else if (lower.startsWith('portuguese')) lang = 'pt';
     return {
         url:    sub.url,
-        label:  sub.label || 'Unknown',
-        lang:   (sub.label || 'en').toLowerCase().startsWith('english') ? 'en'
-              : (sub.label || 'en').toLowerCase().startsWith('french')  ? 'fr'
-              : (sub.label || 'en').toLowerCase().split(' ')[0].slice(0, 2),
+        label,
+        lang,
         format: sub.format || 'vtt',
     };
+}
+
+function deduplicateSubtitles(subs) {
+    const seen = new Set();
+    return subs.filter(sub => {
+        if (!sub.url) return false;
+        if (seen.has(sub.url)) return false;
+        seen.add(sub.url);
+        return true;
+    });
 }
 
 export async function scrapeVyla(tmdbId, type, season, episode) {
@@ -127,14 +155,17 @@ export async function scrapeVyla(tmdbId, type, season, episode) {
             return 0;
         });
 
-        console.log(`[Vyla] ✅ ${sources.length} sources, ${subtitles.length} subs — top: ${sources[0]?.provider} (${sources[0]?.quality})`);
+        const subtitlesDedupe = deduplicateSubtitles(subtitles);
+
+        console.log(`[Vyla] ✅ ${sources.length} sources, ${subtitlesDedupe.length} subs`);
+        sources.forEach((s, i) => console.log(`[Vyla]   [${i+1}] ${s.provider} | ${s.quality} | ${s._type} | noProxy=${s.noProxy}`));
 
         return {
             success:    true,
             provider:   'Vyla Aggregator',
             providerId: 'vyla',
             sources,
-            subtitles,
+            subtitles: subtitlesDedupe,
         };
 
     } catch (e) {
